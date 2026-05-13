@@ -1,29 +1,103 @@
-import sqlite3
 import pandas as pd
-import os
+import clickhouse_connect
+from src.config import settings
+from src.utils.logger import get_logger
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "data", "finance.db")
-CSV_PATH = os.path.join(BASE_DIR, "data", "raw.csv")
+logger = get_logger(__name__)
 
-def init_relational_database():
-    # Kiểm tra và tạo bảng từ file CSV
-    if os.path.exists(CSV_PATH):
-        df = pd.read_csv(CSV_PATH)
-        conn = sqlite3.connect(DB_PATH)
-        # Ghi đè dữ liệu sạch vào bảng prices
-        df.to_sql("prices", conn, if_exists="replace", index=False)
-        conn.close()
-        print("-> Đã đồng bộ dữ liệu CSV vào SQLite thành công.")
-    else:
-        print("-> Lỗi: Không tìm thấy file raw.csv!")
+class DatabaseManager:
+    """Manages ClickHouse database connections, table migrations, and bulk DataFrame ingestion."""
 
-def query_sqlite(sql_query: str) -> str:
-    """Hàm bổ trợ giúp Agent thực thi câu lệnh SQL và trả về text kết quả"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query(sql_query, conn)
-        conn.close()
-        return df.to_string()
-    except Exception as e:
-        return f"Error executing SQL: {str(e)}"
+    def __init__(self):
+        self.host = settings.db_host
+        self.port = settings.db_port
+        self.user = settings.db_user
+        self.password = settings.db_password
+        self.database = settings.db_name
+        self._client = None
+
+    @property
+    def client(self):
+        """Lazy-loaded ClickHouse Connect Client."""
+        if self._client is None:
+            self._client = clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password,
+                database=self.database
+            )
+        return self._client
+
+    def init_db(self) -> None:
+        """Initializes database and tables in ClickHouse using ReplacingMergeTree."""
+        temp_client = None
+        try:
+            temp_client = clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password
+            )
+            temp_client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+        except Exception as e:
+            logger.warning(f"Failed to pre-create database {self.database}: {e}")
+        finally:
+            if temp_client and hasattr(temp_client, "close"):
+                try:
+                    temp_client.close()
+                except Exception as close_err:
+                    logger.debug(f"Error closing temp client: {close_err}")
+
+        client = self.client
+        client.command("""
+            CREATE TABLE IF NOT EXISTS prices (
+                timestamp DateTime,
+                symbol LowCardinality(String),
+                price Float64,
+                volume Float64,
+                SMA_5 Float64,
+                SMA_20 Float64,
+                RSI Float64,
+                MACD Float64,
+                MACD_Signal Float64
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (symbol, timestamp);
+        """)
+        logger.info(f"ClickHouse database schema successfully initialized at {self.host}:{self.port}")
+
+    def ingest_df(self, dataframe: pd.DataFrame, table_name: str = "prices", mode: str = "append") -> None:
+        """Ingests a Pandas DataFrame into the ClickHouse database."""
+        if dataframe is None or dataframe.empty:
+            return
+        dataframe = dataframe.copy()
+        dataframe.columns = dataframe.columns.str.lower()
+
+        if 'timestamp' in dataframe.columns:
+            dataframe['timestamp'] = pd.to_datetime(dataframe['timestamp'])
+        
+        if mode == "replace":
+            self.client.command(f"TRUNCATE TABLE {table_name}")
+        
+        column_mapping = {
+            'timestamp': 'timestamp',
+            'symbol': 'symbol',
+            'price': 'price',
+            'volume': 'volume',
+            'sma_5': 'SMA_5',
+            'sma_20': 'SMA_20',
+            'rsi': 'RSI',
+            'macd': 'MACD',
+            'macd_signal': 'MACD_Signal'
+        }
+        dataframe = dataframe.rename(columns={k: v for k, v in column_mapping.items() if k in dataframe.columns})
+        self.client.insert_df(table_name, dataframe)
+        logger.info(f"Ingested {len(dataframe)} rows into ClickHouse table '{table_name}'")
+
+db_manager = DatabaseManager()
+
+def init_relational_database() -> None:
+    db_manager.init_db()
+
+def ingest_data_to_db(dataframe: pd.DataFrame, table_name: str = "prices", mode: str = "append") -> None:
+    db_manager.ingest_df(dataframe, table_name=table_name, mode=mode)

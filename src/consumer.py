@@ -1,5 +1,4 @@
 import asyncio
-import os
 import json
 import pandas as pd
 from datetime import datetime
@@ -8,9 +7,9 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from src.tools import tool_calculate_technical_indicators
 from src.database import ingest_data_to_db, db_manager
 from src.vector_db import ingest_data_to_qdrant
-from src.chunking import advanced_parent_child_chunker
+from src.utils.chunking import advanced_parent_child_chunker
 from src.config import settings
-from src.logger import get_logger
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -22,16 +21,15 @@ class PriceCacheManager:
         self.use_redis = True
         self._pinged = False
 
-    async def _check_redis(self):
+    async def _check_redis(self) -> None:
         if not self._pinged:
             try:
-                # Set a short timeout for the ping
                 await asyncio.wait_for(self.redis.ping(), timeout=1.0)
                 self.use_redis = True
-                logger.info("-> [Price Cache]: Successfully connected to Redis. Using Redis Sorted Sets for caching.")
+                logger.info("[Price Cache] Successfully connected to Redis. Using Redis Sorted Sets for caching.")
             except Exception as e:
                 self.use_redis = False
-                logger.warning(f"-> [Price Cache]: Redis connection failed ({str(e)}). Falling back to in-memory caching.")
+                logger.warning(f"[Price Cache] Redis connection failed ({e}). Falling back to in-memory caching.")
             self._pinged = True
 
     async def get_and_update_window(self, symbol: str, new_records: list[dict]) -> list[dict]:
@@ -41,10 +39,8 @@ class PriceCacheManager:
         """
         await self._check_redis()
         
-        # Helper to query historical data from ClickHouse
-        async def load_from_clickhouse():
-            logger.info(f"-> [Price Cache]: Cache miss for symbol {symbol}. Warming up from ClickHouse...")
-            # Running synchronous database query in executor to avoid blocking event loop
+        async def load_from_clickhouse() -> list[dict]:
+            logger.debug(f"[Price Cache] Cache miss for symbol {symbol}. Warming up from ClickHouse...")
             loop = asyncio.get_running_loop()
             history_df = await loop.run_in_executor(
                 None,
@@ -55,11 +51,9 @@ class PriceCacheManager:
             )
             if history_df.empty:
                 return []
-            # Reverse history to be in ascending chronological order
             history_df = history_df.iloc[::-1].reset_index(drop=True)
             records = []
             for _, row in history_df.iterrows():
-                # Format timestamp string consistently
                 ts_str = row['timestamp'].strftime("%Y-%m-%d %H:%M:%S.%f") if isinstance(row['timestamp'], datetime) else str(row['timestamp'])
                 records.append({
                     "timestamp": ts_str,
@@ -71,7 +65,6 @@ class PriceCacheManager:
 
         if self.use_redis:
             try:
-                # Check if key exists (zcard)
                 count = await self.redis.zcard(f"prices:window:{symbol}")
                 if count == 0:
                     history = await load_from_clickhouse()
@@ -80,34 +73,24 @@ class PriceCacheManager:
                             score = datetime.strptime(record["timestamp"], "%Y-%m-%d %H:%M:%S.%f").timestamp()
                             await self.redis.zadd(f"prices:window:{symbol}", {json.dumps(record): score})
                 
-                # Add new records
                 for record in new_records:
                     score = datetime.strptime(record["timestamp"], "%Y-%m-%d %H:%M:%S.%f").timestamp()
                     await self.redis.zadd(f"prices:window:{symbol}", {json.dumps(record): score})
                 
-                # Trim to last 30
                 await self.redis.zremrangebyrank(f"prices:window:{symbol}", 0, -31)
-                
-                # Fetch full window
                 cached_raw = await self.redis.zrange(f"prices:window:{symbol}", 0, -1)
                 return [json.loads(x.decode('utf-8')) for x in cached_raw]
             except Exception as e:
-                logger.warning(f"-> [Price Cache]: Redis error: {str(e)}. Falling back to in-memory caching.")
+                logger.warning(f"[Price Cache] Redis error: {e}. Falling back to in-memory caching.")
                 self.use_redis = False
-                # Fall through to in-memory logic
 
-        # In-memory fallback logic
         if symbol not in self._in_memory_cache:
             history = await load_from_clickhouse()
             self._in_memory_cache[symbol] = history
 
-        # Append new records
         self._in_memory_cache[symbol].extend(new_records)
-        
-        # Sort by timestamp
         self._in_memory_cache[symbol].sort(key=lambda x: x["timestamp"])
         
-        # Deduplicate on timestamp
         seen = set()
         unique = []
         for r in self._in_memory_cache[symbol]:
@@ -115,14 +98,12 @@ class PriceCacheManager:
                 seen.add(r["timestamp"])
                 unique.append(r)
                 
-        # Keep last 30
         self._in_memory_cache[symbol] = unique[-30:]
         return self._in_memory_cache[symbol]
 
-# Initialize global PriceCacheManager instance
 price_cache = PriceCacheManager()
 
-async def process_market_batch(messages, producer):
+async def process_market_batch(messages, producer) -> None:
     if not messages:
         return
         
@@ -198,24 +179,24 @@ async def process_market_batch(messages, producer):
                 
             calculated_df = tool_calculate_technical_indicators(combined_df)
             
-            # We only want to append the new records to PostgreSQL, which correspond to the tail of the calculated_df
+            # We only want to append the new records to ClickHouse, which correspond to the tail of the calculated_df
             new_calculated_rows = calculated_df.tail(len(new_sym_records))
             enriched_records.append(new_calculated_rows)
             
         if enriched_records:
             final_df = pd.concat(enriched_records, ignore_index=True)
-            # Store enriched records into PostgreSQL
+            # Store enriched records into ClickHouse
             ingest_data_to_db(
                 dataframe=final_df, 
                 table_name="prices", 
                 mode="append"
             )
-            logger.info(f"-> [Market Consumer]: Enriched and stored {len(final_df)} records to PostgreSQL.")
+            logger.info(f"Enriched and stored {len(final_df)} records to ClickHouse.")
     except Exception as e:
-        logger.error(f"-> [Market Consumer] Enrichment processing failed: {str(e)}")
+        logger.error(f"Market consumer enrichment processing failed: {e}")
         raise e
 
-async def process_news_batch(messages, producer):
+async def process_news_batch(messages, producer) -> None:
     if not messages:
         return
         
@@ -225,7 +206,7 @@ async def process_news_batch(messages, producer):
         try:
             val = json.loads(msg.value.decode('utf-8'))
             if "payload" not in val or "title" not in val["payload"] or "summary" not in val["payload"] or "link" not in val["payload"]:
-                raise KeyError("Thiếu trường dữ liệu bắt buộc (title/summary/link) trong payload.")
+                raise KeyError("Missing required data fields (title/summary/link) in payload.")
                 
             record = {
                 "ingest_timestamp": val.get("ingest_timestamp"),
@@ -235,7 +216,7 @@ async def process_news_batch(messages, producer):
             }
             records.append(record)
         except Exception as e:
-            logger.error(f"Failed to parse news message at offset {msg.offset}: {str(e)}. Routing to DLQ...")
+            logger.error(f"Failed to parse news message at offset {msg.offset}: {e}. Routing to DLQ...")
             dlq_payload = {
                 "error_message": str(e),
                 "fail_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
@@ -252,41 +233,39 @@ async def process_news_batch(messages, producer):
     if not records:
         return
         
-    pandas_df = pd.DataFrame(records)
     all_structured_chunks = []
-    
-    for _, row in pandas_df.iterrows():
-        full_text_content = f"Tiêu đề: {row['title']}\nTóm tắt: {row['summary']}"
+    for item in records:
+        full_text_content = f"Title: {item['title']}\nSummary: {item['summary']}"
         formatted_chunks = advanced_parent_child_chunker(
             text=full_text_content,
-            source_link=row['link'],
+            source_link=item['link'],
             parent_size=1200,
             child_size=250
         )
         
         for chunk in formatted_chunks:
-            chunk["timestamp"] = row['ingest_timestamp']
+            chunk["timestamp"] = item['ingest_timestamp']
             
         all_structured_chunks.extend(formatted_chunks)
         
     if all_structured_chunks:
         try:
             ingest_data_to_qdrant(chunks_data=all_structured_chunks)
-            logger.info(f"-> [News Consumer]: Chunked and stored {len(all_structured_chunks)} news blocks to Qdrant.")
+            logger.info(f"Chunked and stored {len(all_structured_chunks)} news blocks to Qdrant.")
         except Exception as e:
-            logger.error(f"-> [News Consumer] Qdrant storage failure: {str(e)}")
+            logger.error(f"News consumer Qdrant storage failure: {e}")
             raise e
 
-async def run_market_consumer(producer):
+async def run_market_consumer(producer) -> None:
     consumer = AIOKafkaConsumer(
         settings.topic_market,
         bootstrap_servers=settings.kafka_broker,
         group_id="finagent_market_group",
         auto_offset_reset="earliest",
-        enable_auto_commit=False  # Disable auto-commit
+        enable_auto_commit=False
     )
     await consumer.start()
-    logger.info("-> [Market Consumer]: Price data consumer started (Manual Commit)...")
+    logger.info("[Market Consumer] Price data consumer started (Manual Commit)...")
     try:
         while True:
             try:
@@ -302,21 +281,21 @@ async def run_market_consumer(producer):
                         last_offset = msgs[-1].offset
                         await consumer.commit({tp: last_offset + 1})
             except Exception as e:
-                logger.error(f"Error in Market Consumer loop (Commit rejected): {str(e)}")
+                logger.error(f"Error in Market Consumer loop (Commit rejected): {e}")
                 await asyncio.sleep(5)
     finally:
         await consumer.stop()
 
-async def run_news_consumer(producer):
+async def run_news_consumer(producer) -> None:
     consumer = AIOKafkaConsumer(
         settings.topic_news,
         bootstrap_servers=settings.kafka_broker,
         group_id="finagent_news_group",
         auto_offset_reset="earliest",
-        enable_auto_commit=False  # Disable auto-commit
+        enable_auto_commit=False
     )
     await consumer.start()
-    logger.info("-> [News Consumer]: News consumer started (Manual Commit)...")
+    logger.info("[News Consumer] News consumer started (Manual Commit)...")
     try:
         while True:
             try:
@@ -330,14 +309,13 @@ async def run_news_consumer(producer):
                         last_offset = msgs[-1].offset
                         await consumer.commit({tp: last_offset + 1})
             except Exception as e:
-                logger.error(f"Error in News Consumer loop (Commit rejected): {str(e)}")
+                logger.error(f"Error in News Consumer loop (Commit rejected): {e}")
                 await asyncio.sleep(5)
     finally:
         await consumer.stop()
 
-async def main():
-    logger.info("-> [Consumer Pipeline]: Starting consumer pipeline...")
-    # Initialize shared Kafka Producer to route error messages to the DLQ
+async def main() -> None:
+    logger.info("[Consumer Pipeline] Starting consumer pipeline...")
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.kafka_broker,
         value_serializer=lambda v: json.dumps(v).encode('utf-8')
