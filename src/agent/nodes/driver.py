@@ -1,35 +1,76 @@
+from typing import Any
 from pydantic import BaseModel, Field
 from langchain_ollama import ChatOllama
 from src.agent.state import AgentState
 from src.config import settings
-from src.agent.prompts import SUPERVISOR_DRIVER_PROMPT
+from src.agent.prompts import SUPERVISOR_MULTI_INTENT_ROUTER_PROMPT
+from src.agent.router import semantic_router
+from src.utils.logger import get_logger
 
-class DriverOutput(BaseModel):
-    target: str = Field(default="UNKNOWN", description="Target asset symbol in uppercase")
-    mode: str = Field(default="CHITCHAT", description="CHITCHAT or INVESTMENT")
+logger = get_logger(__name__)
 
-async def node_driver(state: AgentState):
-    """Supervisor Agent: Analyzes user intent and orchestrates Multi-Agent workflows (Async)"""
-    human_messages = [m for m in state["messages"] if m.type == "human"]
+class MultiIntentRoutePlan(BaseModel):
+    target: str = Field(default="UNKNOWN", description="Target asset ticker in uppercase (e.g. HPG, BTC, ETH)")
+    activated_intents: list[str] = Field(
+        default=["CHITCHAT"],
+        description="List of activated intents: FETCH_PRICE, FETCH_INDICATOR, FETCH_NEWS, RENDER_CHART, CHITCHAT"
+    )
+    chart_mode: str | None = Field(
+        default=None,
+        description="Chart mode: comprehensive, price_sma, rsi, macd, volume"
+    )
+
+async def node_driver(state: AgentState) -> dict[str, Any]:
+    """
+    Supervisor Agent: Analyzes user intent using a Hybrid Routing Architecture:
+    1. Fast-Path: Semantic Vector Router (< 3ms) via Cosine Similarity on prototype centroids.
+    2. Fallback: LLM Multi-Intent Decomposition via Structured Output when confidence is low.
+    """
+    human_messages = [m for m in state.get("messages", []) if m.type == "human"]
     user_msg = human_messages[-1].content if human_messages else ""
-    
-    llm = ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(DriverOutput)
+
+    # Fast-Path: Try Semantic Vector Router first
+    try:
+        fast_result = semantic_router.fast_route(user_msg)
+        if fast_result is not None:
+            logger.info(f"Fast-Path Semantic Router matched: {fast_result['activated_intents']} for {fast_result['current_target']}")
+            return fast_result
+    except Exception as e:
+        logger.warning(f"Semantic router fast-path evaluation error: {e}. Falling back to LLM.")
+
+    # Fallback to LLM Structured Output Decomposition
+    llm = ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(MultiIntentRoutePlan)
     
     from src.agent.callbacks import get_langfuse_handler
     handler = get_langfuse_handler()
-    callbacks = [handler] if handler else []
+    call_config = {"callbacks": [handler]} if handler else {}
     
     try:
-        parsed: DriverOutput = await llm.ainvoke(
-            f"{SUPERVISOR_DRIVER_PROMPT}\n\nUser Question: {user_msg}",
-            config={"callbacks": callbacks}
+        parsed: MultiIntentRoutePlan = await llm.ainvoke(
+            f"{SUPERVISOR_MULTI_INTENT_ROUTER_PROMPT}\n\nUser Question: {user_msg}",
+            config=call_config
         )
-        mode = parsed.mode.upper() if parsed and parsed.mode else "CHITCHAT"
+        intents = parsed.activated_intents if parsed and parsed.activated_intents else ["CHITCHAT"]
         target = parsed.target.upper() if parsed and parsed.target else "UNKNOWN"
+        chart_mode = parsed.chart_mode if parsed else None
+        
+        is_chitchat = "CHITCHAT" in intents and len(intents) == 1
+        
         return {
             "current_target": target,
-            "chat": True if mode == "CHITCHAT" else False,
-            "next_worker": "FINAL_ANALYST" if mode == "CHITCHAT" else "PARALLEL_EXECUTE"
+            "activated_intents": intents,
+            "chart_mode": chart_mode,
+            "chat": is_chitchat,
+            "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE",
+            "routing_source": "LLM_STRUCTURED_FALLBACK"
         }
     except Exception as e:
-        return {"current_target": "UNKNOWN", "chat": True, "next_worker": "FINAL_ANALYST"}
+        logger.warning(f"Supervisor LLM parsing failed: {e}. Defaulting to CHITCHAT.")
+        return {
+            "current_target": "UNKNOWN",
+            "activated_intents": ["CHITCHAT"],
+            "chart_mode": None,
+            "chat": True,
+            "next_worker": "FINAL_ANALYST",
+            "routing_source": "ERROR_DEFAULT_CHITCHAT"
+        }

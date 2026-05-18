@@ -1,5 +1,11 @@
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.memory import MemorySaver
+
+try:
+    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+except (ImportError, ModuleNotFoundError):
+    AsyncRedisSaver = None
+
 from redis import Redis
 
 from src.config import settings
@@ -11,26 +17,23 @@ from src.agent.nodes.rag_worker import node_rag_worker
 from src.agent.nodes.chart_worker import node_chart_worker
 from src.agent.nodes.analyst import node_final_analyst, node_purge_state
 
-def node_join_barrier(state: AgentState):
+def node_join_barrier(state: AgentState) -> dict[str, str]:
     """Barrier Node (Join): Synchronizes parallel agent execution branches before routing to the next step"""
-    human_messages = [m for m in state["messages"] if m.type == "human"]
-    user_msg = human_messages[-1].content.lower() if human_messages else ""
+    intents = state.get("activated_intents", [])
+    has_chart_intent = "RENDER_CHART" in intents
     
-    # Check if the user explicitly wants to generate or visualize a chart
+    human_messages = [m for m in state.get("messages", []) if m.type == "human"]
+    user_msg = human_messages[-1].content.lower() if human_messages else ""
     chart_keywords = ["biểu đồ", "đồ thị", "vẽ", "chart", "graph", "visualize", "draw"]
-    needs_chart = any(kw in user_msg for kw in chart_keywords)
+    needs_chart = has_chart_intent or any(kw in user_msg for kw in chart_keywords)
     
     if needs_chart:
         return {"next_worker": "Chart_Agent"}
     else:
         return {"next_worker": "FINAL_ANALYST"}
 
-# =====================================================================
-# SETUP PARALLEL MULTI-AGENT LANGGRAPH WORKFLOW
-# =====================================================================
 workflow = StateGraph(AgentState)
 
-# Declare all Agent Nodes
 workflow.add_node("security_shield", node_security_shield)
 workflow.add_node("driver", node_driver)
 workflow.add_node("sql_worker", node_sql_worker)
@@ -49,14 +52,23 @@ workflow.add_conditional_edges(
     {"blocked": "final_analyst", "pass": "driver"}
 )
 
-# Router 2: Supervisor Forking Router (Intelligent Branching)
-def supervisor_fork_router(state: AgentState):
-    next_step = state["next_worker"]
-    if next_step == "PARALLEL_EXECUTE":
-        # Return a list of nodes to activate parallel execution (fan-out)
-        return ["call_sql", "call_rag"] 
-    else:
+def supervisor_fork_router(state: AgentState) -> list[str]:
+    """Dynamically routes execution based on activated multi-intents."""
+    if state.get("chat", False) or state.get("next_worker") != "PARALLEL_EXECUTE":
         return ["call_analyst_direct"]
+        
+    intents = state.get("activated_intents", [])
+    branches = []
+    
+    # Check SQL worker requirement (price, indicators, or chart data)
+    if not intents or any(i in intents for i in ["FETCH_PRICE", "FETCH_INDICATOR", "RENDER_CHART"]):
+        branches.append("call_sql")
+        
+    # Check RAG worker requirement (qualitative news context)
+    if not intents or "FETCH_NEWS" in intents:
+        branches.append("call_rag")
+        
+    return branches if branches else ["call_analyst_direct"]
 
 workflow.add_conditional_edges(
     "driver",
@@ -98,11 +110,13 @@ workflow.add_edge("chart_worker", "final_analyst")
 workflow.add_edge("final_analyst", "state_purger")
 workflow.add_edge("state_purger", END)
 
-# 1. Initialize a persistent Redis client
-redis_client = Redis(host=settings.redis_host, port=settings.redis_port)
+redis_url = f"redis://{settings.redis_host}:{settings.redis_port}"
+if AsyncRedisSaver is not None:
+    try:
+        redis_checkpointer = AsyncRedisSaver(redis_url=redis_url)
+    except Exception:
+        redis_checkpointer = MemorySaver()
+else:
+    redis_checkpointer = MemorySaver()
 
-# 2. Wrap client in LangGraph RedisSaver
-redis_checkpointer = RedisSaver(redis_client)
-
-# 3. Compile the graph using Redis as external memory instead of in-memory RAM
 app = workflow.compile(checkpointer=redis_checkpointer)

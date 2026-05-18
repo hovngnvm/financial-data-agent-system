@@ -1,9 +1,10 @@
+from typing import Any
 import re
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
+from langchain_ollama import OllamaLLM
 from src.agent.state import AgentState
-from src.logger import get_logger
-from src.agent.prompts import SECURITY_SHIELD_PROMPT
+from src.config import settings
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -20,31 +21,29 @@ PROMPT_INJECTION_REGEX = re.compile(
     re.IGNORECASE
 )
 
-async def node_security_shield(state: AgentState):
+async def node_security_shield(state: AgentState) -> dict[str, Any]:
     """Guardrails: Protect the system from Prompt Injection and malicious attacks (Async)"""
     human_messages = [m for m in state["messages"] if m.type == "human"]
     last_user_message = human_messages[-1].content if human_messages else ""
     if not last_user_message:
         return {"security_status": "SAFE", "next_worker": "CONTINUE"}
     
-    # 1. Immediate Rule-based check
+    # Rule-based guard check
     if SQL_INJECTION_REGEX.search(last_user_message) or PROMPT_INJECTION_REGEX.search(last_user_message):
         logger.warning(f"Security Alert: Rule-based regex matched malicious pattern in input: '{last_user_message}'")
         return {"security_status": "MALICIOUS", "next_worker": "FINISH"}
     
-    # 2. LLM-based Llama-Guard Check with Pydantic Structured Output
-    llm_json = ChatOllama(model="llama-guard3:1b-q5_K_S", temperature=0.0).with_structured_output(SecurityCheckResult)
-    
     from src.agent.callbacks import get_langfuse_handler
     handler = get_langfuse_handler()
-    callbacks = [handler] if handler else []
+    call_config = {"callbacks": [handler]} if handler else {}
     
     try:
-        response: SecurityCheckResult = await llm_json.ainvoke(
-            [{"role": "user", "content": f"{SECURITY_SHIELD_PROMPT}\nInput: {last_user_message}"}], 
-            config={"callbacks": callbacks}
+        guard_llm = OllamaLLM(model=settings.llm_guard_model, temperature=0.0)
+        raw_res = await guard_llm.ainvoke(
+            f"User: {last_user_message}",
+            config=call_config
         )
-        status = response.status.upper() if response and response.status else "SAFE"
+        status = "MALICIOUS" if "unsafe" in str(raw_res).lower() else "SAFE"
     except Exception as e:
         logger.warning(f"Llama-Guard service call failed ({e}). Falling back to Rule-based Sanitizer (Input allowed).")
         status = "SAFE"
