@@ -1,0 +1,54 @@
+# .github/workflows/ci.yml
+name: FinAgent CI
+
+# Trigger workflow pipeline on push or pull request targeting main branch
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  code-quality-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repository source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Setup Python 3.12 environment
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip" # Cache pip packages to accelerate subsequent builds
+
+      # 3. Install required project dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # 4. Static syntax check and compilation
+      - name: Static compilation check
+        run: |
+          find src tests -name "*.py" | xargs python -m py_compile
+
+      # 5. Run static syntax check and linter
+      - name: Lint with flake8
+        run: |
+          # Stop the build if there are Python syntax errors or undefined names
+          flake8 src/ main.py --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings
+          flake8 src/ main.py --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+      # 6. Run automated test suite with full auto-discovery
+      - name: Run Pytest Test Suite
+        run: |
+          PYTHONPATH=. pytest tests/ -v --ignore=tests/evaluate.py --ignore=tests/seed_data.py
+
+      # 7. Run 3-Layer RAG Evaluation and Quality Gate
+      - name: Run 3-Layer RAG Evaluation Suite
+        run: |
+          PYTHONPATH=. python tests/evaluate.py
