@@ -6,8 +6,6 @@ try:
 except (ImportError, ModuleNotFoundError):
     AsyncRedisSaver = None
 
-from redis import Redis
-
 from src.config import settings
 from src.agent.state import AgentState
 from src.agent.nodes.security import node_security_shield
