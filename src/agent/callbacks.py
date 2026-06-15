@@ -1,34 +1,8 @@
 import os
-import sys
-import types
 from src.config import settings
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# Ensure Langchain 1.x module compatibility for Langfuse 2.x callback loader
-try:
-    import langchain_core.callbacks.base
-    import langchain_core.documents
-    import langchain_core.agents
-
-    if "langchain.callbacks.base" not in sys.modules:
-        lc_callbacks_base = types.ModuleType("langchain.callbacks.base")
-        lc_callbacks_base.BaseCallbackHandler = langchain_core.callbacks.base.BaseCallbackHandler
-        sys.modules["langchain.callbacks"] = types.ModuleType("langchain.callbacks")
-        sys.modules["langchain.callbacks.base"] = lc_callbacks_base
-
-    if "langchain.schema.document" not in sys.modules:
-        lc_schema_doc = types.ModuleType("langchain.schema.document")
-        lc_schema_doc.Document = langchain_core.documents.Document
-        lc_schema_agent = types.ModuleType("langchain.schema.agent")
-        lc_schema_agent.AgentAction = langchain_core.agents.AgentAction
-        lc_schema_agent.AgentFinish = langchain_core.agents.AgentFinish
-        sys.modules["langchain.schema"] = types.ModuleType("langchain.schema")
-        sys.modules["langchain.schema.document"] = lc_schema_doc
-        sys.modules["langchain.schema.agent"] = lc_schema_agent
-except Exception as bridge_err:
-    logger.debug(f"Langchain compatibility bridge exception: {bridge_err}")
 
 _langfuse_handler = None
 
