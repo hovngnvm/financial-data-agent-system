@@ -8,3 +8,4 @@ venv/
 *.log
 AGENTS.md
 .agents/
+docs/

@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')  # Headless backend for server environments
 import matplotlib.pyplot as plt
@@ -128,7 +128,7 @@ def tool_generate_market_chart(ticker: str, chart_type: str = "comprehensive", l
         if df.empty:
             return f"Invalid timestamp records for {ticker}."
 
-        os.makedirs(os.path.dirname(OUTPUT_CHART_PATH), exist_ok=True)
+        Path(OUTPUT_CHART_PATH).parent.mkdir(parents=True, exist_ok=True)
         
         # 1. RSI Chart Mode (2 Subplots)
         if chart_type == "rsi":

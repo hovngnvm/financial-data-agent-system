@@ -4,7 +4,7 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 
-def get_logger(name: str, level: int = logging.INFO, log_dir: Path | None = None) -> logging.Logger:
+def get_logger(name: str = __name__, level: int = logging.INFO, log_dir: Path | None = None) -> logging.Logger:
     """Returns a configured Python logger instance with standard stream and rotating file handlers."""
     logger = logging.getLogger(name)
     logger.setLevel(level)

@@ -1,5 +1,5 @@
-import os
 import asyncio
+from pathlib import Path
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import NetworkError
 from telegram.ext import (
@@ -149,13 +149,12 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     
     try:
-        if os.path.exists(CHART_FILE_PATH):
-            os.remove(CHART_FILE_PATH)
+        Path(CHART_FILE_PATH).unlink(missing_ok=True)
             
         ai_response = await process_agent_workflow(user_text, chat_id)
         await update.message.reply_text(ai_response)
         
-        if os.path.exists(CHART_FILE_PATH):
+        if Path(CHART_FILE_PATH).exists():
             await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
             with open(CHART_FILE_PATH, "rb") as chart_img:
                 await update.message.reply_photo(
@@ -184,13 +183,12 @@ async def handle_analyze_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        if os.path.exists(CHART_FILE_PATH):
-            os.remove(CHART_FILE_PATH)
+        Path(CHART_FILE_PATH).unlink(missing_ok=True)
             
         ai_response = await process_agent_workflow(simulated_message, chat_id)
         await update.message.reply_text(ai_response)
         
-        if os.path.exists(CHART_FILE_PATH):
+        if Path(CHART_FILE_PATH).exists():
             with open(CHART_FILE_PATH, "rb") as chart_img:
                 await update.message.reply_photo(photo=chart_img, caption=f"Technical analysis chart: {ticker}")
     except Exception as e:
