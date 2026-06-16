@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 import pytest
 import pandas as pd
 from unittest.mock import MagicMock
@@ -88,7 +88,7 @@ def test_tool_generate_market_chart_modes(mocker, chart_type, tmp_path):
     
     msg = tool_generate_market_chart("HPG", chart_type=chart_type, limit=10)
     assert f"Rendered {chart_type} chart successfully" in msg
-    assert os.path.exists(test_chart_file)
+    assert Path(test_chart_file).exists()
 
 def test_tool_generate_market_chart_unknown_ticker():
     msg = tool_generate_market_chart("UNKNOWN")

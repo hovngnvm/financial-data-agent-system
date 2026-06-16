@@ -9,10 +9,11 @@ import os
 import sys
 import time
 import argparse
+from pathlib import Path
 
-PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_DIR)
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseIndexParams, PointStruct, Prefetch, FusionQuery, Fusion

@@ -248,9 +248,10 @@ financial-data-agent-system/
 │   ├── seed_data.py                   # Test dataset initialization fixtures
 │   ├── test_chunking.py               # Markdown table and hierarchical chunking tests
 │   ├── test_consumer.py               # Ingestion stream, DLQ, and cache manager tests
-│   ├── test_core.py                   # Configuration and core utility tests
 │   ├── test_database.py               # ClickHouse query and schema tests
+│   ├── test_prompt_integrity.py       # Prompt contracts and multi-agent node integrity tests
 │   ├── test_router.py                 # Semantic Vector Router and Context Trimming tests
+│   ├── test_security_guard.py         # Security injection guardrails and route plan tests
 │   ├── test_tools.py                  # Semantic layer tools and chart rendering tests
 │   └── test_vector_db.py              # Qdrant hybrid vector search tests
 │
@@ -293,7 +294,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Run pytest unit and integration test suite across all components
-PYTHONPATH=. pytest tests/test_core.py tests/test_chunking.py tests/test_consumer.py tests/test_database.py tests/test_vector_db.py tests/test_tools.py -v
+PYTHONPATH=. pytest tests/test_prompt_integrity.py tests/test_security_guard.py tests/test_chunking.py tests/test_consumer.py tests/test_database.py tests/test_router.py tests/test_tools.py tests/test_vector_db.py -v
 
 # Run the 3-Layer RAG Quality Gate and Chunking Strategy Benchmark Suite
 PYTHONPATH=. python tests/evaluate.py --all
