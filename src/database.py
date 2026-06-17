@@ -3,6 +3,18 @@ import clickhouse_connect
 from src.config import settings
 from src.utils.logger import get_logger
 
+COLUMN_MAPPING: dict[str, str] = {
+    'timestamp': 'timestamp',
+    'symbol': 'symbol',
+    'price': 'price',
+    'volume': 'volume',
+    'sma_5': 'SMA_5',
+    'sma_20': 'SMA_20',
+    'rsi': 'RSI',
+    'macd': 'MACD',
+    'macd_signal': 'MACD_Signal'
+}
+
 logger = get_logger(__name__)
 
 class DatabaseManager:
@@ -79,25 +91,8 @@ class DatabaseManager:
         if mode == "replace":
             self.client.command(f"TRUNCATE TABLE {table_name}")
         
-        column_mapping = {
-            'timestamp': 'timestamp',
-            'symbol': 'symbol',
-            'price': 'price',
-            'volume': 'volume',
-            'sma_5': 'SMA_5',
-            'sma_20': 'SMA_20',
-            'rsi': 'RSI',
-            'macd': 'MACD',
-            'macd_signal': 'MACD_Signal'
-        }
-        dataframe = dataframe.rename(columns={k: v for k, v in column_mapping.items() if k in dataframe.columns})
+        dataframe = dataframe.rename(columns={k: v for k, v in COLUMN_MAPPING.items() if k in dataframe.columns})
         self.client.insert_df(table_name, dataframe)
         logger.info(f"Ingested {len(dataframe)} rows into ClickHouse table '{table_name}'")
 
 db_manager = DatabaseManager()
-
-def init_relational_database() -> None:
-    db_manager.init_db()
-
-def ingest_data_to_db(dataframe: pd.DataFrame, table_name: str = "prices", mode: str = "append") -> None:
-    db_manager.ingest_df(dataframe, table_name=table_name, mode=mode)

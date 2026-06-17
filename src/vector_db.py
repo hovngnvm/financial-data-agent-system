@@ -1,10 +1,13 @@
-from typing import Any
 import uuid
 import mmh3
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseIndexParams, PointStruct
 from src.config import settings
 from src.utils.logger import get_logger
+
+DENSE_VECTOR_DIM: int = 384
+SPARSE_BUCKET_SIZE: int = 1_000_000
+DEFAULT_EMBEDDING_BATCH_SIZE: int = 32
 
 logger = get_logger(__name__)
 
@@ -17,14 +20,14 @@ class VectorDBManager:
         self._embedding_model = None
         self._reranking_model = None
 
-    def get_embedding_model(self) -> Any:
+    def get_embedding_model(self):
         """Lazy-loaded dense embedding model."""
         if self._embedding_model is None:
             from sentence_transformers import SentenceTransformer
             self._embedding_model = SentenceTransformer(settings.embedding_model_name)
         return self._embedding_model
 
-    def get_reranking_model(self) -> Any:
+    def get_reranking_model(self):
         """Lazy-loaded cross-encoder reranking model."""
         if self._reranking_model is None:
             from sentence_transformers import CrossEncoder
@@ -40,7 +43,7 @@ class VectorDBManager:
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(
-                    size=384, 
+                    size=DENSE_VECTOR_DIM, 
                     distance=Distance.COSINE
                 ),
                 sparse_vectors_config={
@@ -55,7 +58,7 @@ class VectorDBManager:
         else:
             logger.info(f"Qdrant Hybrid Collection '{self.collection_name}' already exists.")
 
-    def text_to_sparse_vector(self, text_content: str) -> dict:
+    def text_to_sparse_vector(self, text_content: str) -> dict[str, list]:
         """
         Hashes raw text tokens consistently into a Qdrant Sparse Vector format (Term Frequency) using mmh3.
         Aggregates frequency weights if hash collisions occur within the bucket space.
@@ -67,10 +70,9 @@ class VectorDBManager:
             if clean_word:
                 frequency[clean_word] = frequency.get(clean_word, 0.0) + 1.0
                 
-        # Aggregate token frequency by hashed index to avoid duplicate indices in sparse vector
         sparse_map = {}
         for word, count in frequency.items():
-            idx = abs(mmh3.hash(word)) % 1000000
+            idx = abs(mmh3.hash(word)) % SPARSE_BUCKET_SIZE
             sparse_map[idx] = sparse_map.get(idx, 0.0) + float(count)
             
         return {
@@ -86,8 +88,7 @@ class VectorDBManager:
             return
             
         texts = [chunk["text"] for chunk in chunks_data]
-        # Batch vectorization significantly reduces forward-pass latency compared to single-item encoding loops
-        dense_embeddings = self.get_embedding_model().encode(texts, batch_size=32).tolist()
+        dense_embeddings = self.get_embedding_model().encode(texts, batch_size=DEFAULT_EMBEDDING_BATCH_SIZE).tolist()
         
         points = []
         for idx, (chunk, dense_emb) in enumerate(zip(chunks_data, dense_embeddings)):
@@ -122,18 +123,3 @@ class VectorDBManager:
 vector_db_manager = VectorDBManager()
 qdrant_client = vector_db_manager.client
 COLLECTION_NAME = vector_db_manager.collection_name
-
-def get_embedding_model() -> Any:
-    return vector_db_manager.get_embedding_model()
-
-def get_reranking_model() -> Any:
-    return vector_db_manager.get_reranking_model()
-
-def init_vector_database() -> None:
-    vector_db_manager.init_db()
-
-def _text_to_sparse_vector(text_content: str) -> dict:
-    return vector_db_manager.text_to_sparse_vector(text_content)
-
-def ingest_data_to_qdrant(chunks_data: list[dict]) -> None:
-    vector_db_manager.ingest_data(chunks_data)

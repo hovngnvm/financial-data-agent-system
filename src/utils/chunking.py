@@ -11,6 +11,12 @@ SENTENCE_END_REGEX = re.compile(
     r'(?<=[.!?])\s+'
 )
 
+def _restore_tables(text: str, tables: list[str]) -> str:
+    restored = text
+    for idx, table_content in enumerate(tables):
+        restored = restored.replace(f"__TABLE_PLACEHOLDER_{idx}__", table_content)
+    return restored
+
 def preserve_markdown_tables(text: str) -> tuple[str, list[str]]:
     """
     Identifies and isolates Markdown tables.
@@ -27,17 +33,13 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
     """
     Hierarchical text splitter (Parent-Child Chunking) preserving sentence boundaries and Markdown tables.
     """
-    # Isolate financial tables
     processed_text, preserved_tables = preserve_markdown_tables(text)
-    
-    # Split text into paragraphs
     paragraphs = [p.strip() for p in processed_text.split("\n\n") if p.strip()]
     
     parent_chunks = []
     current_parent = []
     current_length = 0
     
-    # Group small paragraphs into larger Parent Context blocks (~1200 characters)
     for para in paragraphs:
         current_parent.append(para)
         current_length += len(para)
@@ -52,12 +54,8 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
         
     final_prepared_payloads = []
     
-    # Decompose Parent blocks into Child Chunks (~250 characters)
     for p_idx, parent_content in enumerate(parent_chunks):
-        actual_parent_text = parent_content
-        for t_idx, table_content in enumerate(preserved_tables):
-            actual_parent_text = actual_parent_text.replace(f"__TABLE_PLACEHOLDER_{t_idx}__", table_content)
-            
+        actual_parent_text = _restore_tables(parent_content, preserved_tables)
         sentences = SENTENCE_END_REGEX.split(parent_content)
         
         current_child = []
@@ -70,10 +68,7 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
             if current_child_len >= child_size:
                 child_text_raw = " ".join(current_child).strip()
                 if child_text_raw:
-                    child_text = child_text_raw
-                    for t_idx, table_content in enumerate(preserved_tables):
-                        child_text = child_text.replace(f"__TABLE_PLACEHOLDER_{t_idx}__", table_content)
-                        
+                    child_text = _restore_tables(child_text_raw, preserved_tables)
                     final_prepared_payloads.append({
                         "text": child_text,
                         "parent_text": actual_parent_text,
@@ -83,14 +78,10 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
                 current_child = []
                 current_child_len = 0
                 
-        # Handle the remaining trailing child sequence in this parent block
         if current_child:
             child_text_raw = " ".join(current_child).strip()
             if child_text_raw:
-                child_text = child_text_raw
-                for t_idx, table_content in enumerate(preserved_tables):
-                    child_text = child_text.replace(f"__TABLE_PLACEHOLDER_{t_idx}__", table_content)
-                    
+                child_text = _restore_tables(child_text_raw, preserved_tables)
                 final_prepared_payloads.append({
                     "text": child_text,
                     "parent_text": actual_parent_text,
@@ -99,3 +90,4 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
                 })
                 
     return final_prepared_payloads
+

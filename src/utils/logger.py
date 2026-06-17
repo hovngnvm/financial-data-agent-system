@@ -4,6 +4,10 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 
+MAX_LOG_BYTES: int = 10 * 1024 * 1024
+LOG_BACKUP_COUNT: int = 5
+
+
 def get_logger(name: str = __name__, level: int = logging.INFO, log_dir: Path | None = None) -> logging.Logger:
     """Returns a configured Python logger instance with standard stream and rotating file handlers."""
     logger = logging.getLogger(name)
@@ -22,7 +26,9 @@ def get_logger(name: str = __name__, level: int = logging.INFO, log_dir: Path | 
         if log_dir:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / "finagent.log"
-            file_handler = RotatingFileHandler(str(log_file), maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+            file_handler = RotatingFileHandler(
+                str(log_file), maxBytes=MAX_LOG_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+            )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
         
