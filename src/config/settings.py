@@ -1,9 +1,10 @@
+from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 # Project root directory for consistent cross-platform absolute path resolutions
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     # Database Settings (ClickHouse)
@@ -16,9 +17,9 @@ class Settings(BaseSettings):
     # Qdrant Vector DB Settings
     qdrant_host: str = Field("localhost", alias="QDRANT_HOST")
     qdrant_port: int = Field(6333, alias="QDRANT_PORT")
-    qdrant_collection: str = "financial_reports"
-    embedding_model_name: str = "all-MiniLM-L6-v2"
-    rerank_model_name: str = "BAAI/bge-reranker-v2-m3"
+    qdrant_collection: str = Field("financial_reports", alias="QDRANT_COLLECTION")
+    embedding_model_name: str = Field("all-MiniLM-L6-v2", alias="EMBEDDING_MODEL_NAME")
+    rerank_model_name: str = Field("BAAI/bge-reranker-v2-m3", alias="RERANK_MODEL_NAME")
 
     # Redis Cache & Checkpointer Settings
     redis_host: str = Field("localhost", alias="REDIS_HOST")
@@ -33,11 +34,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = Field(None, alias="TELEGRAM_BOT_TOKEN")
 
     # Kafka Streaming Settings
-    kafka_broker: str = "localhost:9092"
-    topic_market: str = "finagent_bronze_market"
-    topic_news: str = "finagent_bronze_news"
-    topic_market_dlq: str = "finagent_market_dlq"
-    topic_news_dlq: str = "finagent_news_dlq"
+    kafka_broker: str = Field("localhost:9092", alias="KAFKA_BROKER")
+    topic_market: str = Field("finagent_bronze_market", alias="TOPIC_MARKET")
+    topic_news: str = Field("finagent_bronze_news", alias="TOPIC_NEWS")
+    topic_market_dlq: str = Field("finagent_market_dlq", alias="TOPIC_MARKET_DLQ")
+    topic_news_dlq: str = Field("finagent_news_dlq", alias="TOPIC_NEWS_DLQ")
 
     # LLM Model Settings (Sub-2B lightweight defaults)
     llm_coder_model: str = Field("qwen2.5-coder:1.5b-instruct", alias="LLM_CODER_MODEL")
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
 
     # Analyst Multi-Provider Settings (Local / Cloud Switcher)
     analyst_llm_provider: str = Field("local", alias="ANALYST_LLM_PROVIDER")
+    analyst_temperature: float = Field(0.3, alias="ANALYST_TEMPERATURE")
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     gemini_api_key: str = Field("", alias="GEMINI_API_KEY")
     deepseek_api_key: str = Field("", alias="DEEPSEEK_API_KEY")
@@ -57,6 +59,9 @@ class Settings(BaseSettings):
     max_history_tokens: int = Field(800, alias="MAX_HISTORY_TOKENS")
     semantic_router_threshold: float = Field(0.55, alias="SEMANTIC_ROUTER_THRESHOLD")
 
+    # Vnstock Market Data Settings
+    vnstock_api_key: str = Field("", alias="VNSTOCK_API_KEY")
+
     # File Paths
     chart_file_path: str = str(PROJECT_ROOT / "data" / "exports" / "market_chart.png")
 
@@ -64,10 +69,18 @@ class Settings(BaseSettings):
         env_file=str(PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        case_sensitive=False,
     )
 
 # Auto-bootstrap runtime directories
 (PROJECT_ROOT / "data" / "exports").mkdir(parents=True, exist_ok=True)
 (PROJECT_ROOT / "logs").mkdir(parents=True, exist_ok=True)
 
-settings = Settings()
+
+@lru_cache()
+def get_settings() -> Settings:
+    """Returns singleton Settings instance cached in memory."""
+    return Settings()
+
+
+settings = get_settings()
