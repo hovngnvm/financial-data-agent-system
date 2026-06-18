@@ -67,6 +67,9 @@ INTENT_UTTERANCES: dict[str, list[str]] = {
     ]
 }
 
+SECONDARY_INTENT_DELTA: float = 0.06
+ROUTER_FALLBACK_MARGIN: float = 0.10
+
 class SemanticVectorRouter:
     """
     Sub-3ms Fast-Path Intent Router:
@@ -83,7 +86,6 @@ class SemanticVectorRouter:
         for intent_name, utterances in INTENT_UTTERANCES.items():
             embeddings = self.model.encode(utterances, convert_to_numpy=True, normalize_embeddings=True)
             centroid = np.mean(embeddings, axis=0)
-            # Normalize centroid vector to unit length for direct dot product cosine similarity
             norm = np.linalg.norm(centroid)
             if norm > 0:
                 centroid = centroid / norm
@@ -124,6 +126,7 @@ class SemanticVectorRouter:
         
         detected_intents: set[str] = set()
         max_overall_score = 0.0
+        all_clause_scores: list[dict[str, float]] = []
         
         for clause in clauses:
             clause_vector = self.model.encode(clause, convert_to_numpy=True, normalize_embeddings=True)
@@ -131,6 +134,7 @@ class SemanticVectorRouter:
                 intent_name: float(np.dot(clause_vector, centroid))
                 for intent_name, centroid in self.intent_centroids.items()
             }
+            all_clause_scores.append(clause_scores)
             best_intent = max(clause_scores, key=clause_scores.get)
             best_score = clause_scores[best_intent]
             max_overall_score = max(max_overall_score, best_score)
@@ -138,20 +142,17 @@ class SemanticVectorRouter:
             if best_score >= active_threshold:
                 detected_intents.add(best_intent)
                 
-            # Check secondary high-affinity intents in same clause (e.g. chart + indicator)
             for intent_name, score in clause_scores.items():
-                if intent_name != best_intent and intent_name != "CHITCHAT" and score >= max(active_threshold, best_score - 0.06):
+                if intent_name != best_intent and intent_name != "CHITCHAT" and score >= max(active_threshold, best_score - SECONDARY_INTENT_DELTA):
                     detected_intents.add(intent_name)
 
-        # Fallback condition: ambiguous query or low confidence
-        if not detected_intents or max_overall_score < (active_threshold - 0.10):
+        if not detected_intents or max_overall_score < (active_threshold - ROUTER_FALLBACK_MARGIN):
             return None
 
-        # Clean chitchat isolation
         if "CHITCHAT" in detected_intents:
             if target_ticker == "UNKNOWN" and any(
-                clause_scores.get("CHITCHAT", 0.0) >= max(clause_scores.get("FETCH_PRICE", 0.0), clause_scores.get("FETCH_NEWS", 0.0))
-                for clause in clauses
+                scores.get("CHITCHAT", 0.0) >= max(scores.get("FETCH_PRICE", 0.0), scores.get("FETCH_NEWS", 0.0))
+                for scores in all_clause_scores
             ):
                 detected_intents = {"CHITCHAT"}
             elif len(detected_intents) > 1:
@@ -161,7 +162,6 @@ class SemanticVectorRouter:
         has_chart = "RENDER_CHART" in detected_intents
         chart_mode = self.detect_chart_mode(query) if has_chart else None
 
-        # If user asks for chart without explicit indicator, add FETCH_INDICATOR or FETCH_PRICE
         if has_chart and not any(i in detected_intents for i in ["FETCH_PRICE", "FETCH_INDICATOR"]):
             detected_intents.add("FETCH_INDICATOR" if chart_mode in ["rsi", "macd", "price_sma"] else "FETCH_PRICE")
 
@@ -176,5 +176,4 @@ class SemanticVectorRouter:
             "routing_source": "SEMANTIC_VECTOR_FAST_PATH"
         }
 
-# Global singleton router instance
 semantic_router = SemanticVectorRouter(settings.embedding_model_name)

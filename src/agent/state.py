@@ -1,4 +1,5 @@
-from typing import Annotated, Sequence, TypedDict, Any
+from collections.abc import Sequence
+from typing import Annotated, TypedDict, Any
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
@@ -11,13 +12,16 @@ class AgentState(TypedDict):
     sql_data_output: list[dict[str, Any]]
     rag_text_output: str
     chart_status_msg: str
+    chart_file_path: str | None
     
     analyst_provider: str
     
     activated_intents: list[str]
     chart_mode: str | None
+    routing_source: str | None
     
     error_log: str
     retry_count: int
     
     next_worker: str
+

@@ -1,12 +1,8 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
-try:
-    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-except (ImportError, ModuleNotFoundError):
-    AsyncRedisSaver = None
-
 from src.config import settings
+from src.utils.logger import get_logger
 from src.agent.state import AgentState
 from src.agent.nodes.security import node_security_shield
 from src.agent.nodes.driver import node_driver
@@ -14,6 +10,8 @@ from src.agent.nodes.sql_worker import node_sql_worker
 from src.agent.nodes.rag_worker import node_rag_worker
 from src.agent.nodes.chart_worker import node_chart_worker
 from src.agent.nodes.analyst import node_final_analyst, node_purge_state
+
+logger = get_logger(__name__)
 
 def node_join_barrier(state: AgentState) -> dict[str, str]:
     """Barrier Node (Join): Synchronizes parallel agent execution branches before routing to the next step"""
@@ -26,7 +24,7 @@ def node_join_barrier(state: AgentState) -> dict[str, str]:
     needs_chart = has_chart_intent or any(kw in user_msg for kw in chart_keywords)
     
     if needs_chart:
-        return {"next_worker": "Chart_Agent"}
+        return {"next_worker": "CHART_WORKER"}
     else:
         return {"next_worker": "FINAL_ANALYST"}
 
@@ -94,7 +92,7 @@ workflow.add_edge("rag_worker", "join_barrier")
 # Router 3: Join Barrier Node (Fan-in Check)
 workflow.add_conditional_edges(
     "join_barrier",
-    lambda state: "call_chart" if state["next_worker"] == "Chart_Agent" else "call_analyst",
+    lambda state: "call_chart" if state["next_worker"] in ["CHART_WORKER", "Chart_Agent"] else "call_analyst",
     {
         "call_chart": "chart_worker",
         "call_analyst": "final_analyst"
@@ -108,13 +106,26 @@ workflow.add_edge("chart_worker", "final_analyst")
 workflow.add_edge("final_analyst", "state_purger")
 workflow.add_edge("state_purger", END)
 
-redis_url = f"redis://{settings.redis_host}:{settings.redis_port}"
-if AsyncRedisSaver is not None:
+def get_checkpointer():
+    """
+    Initializes the state checkpointer with auto-detection.
+    Attempts to connect to Redis (AsyncRedisSaver) if available and reachable;
+    otherwise safely falls back to in-memory MemorySaver.
+    """
     try:
-        redis_checkpointer = AsyncRedisSaver(redis_url=redis_url)
-    except Exception:
-        redis_checkpointer = MemorySaver()
-else:
-    redis_checkpointer = MemorySaver()
+        import socket
+        # Test if Redis port is open and reachable
+        with socket.create_connection((settings.redis_host, settings.redis_port), timeout=1.0):
+            pass
+            
+        from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+        redis_url = f"redis://{settings.redis_host}:{settings.redis_port}"
+        saver = AsyncRedisSaver.from_conn_string(redis_url)
+        logger.info(f"Connected to Redis checkpointer at {settings.redis_host}:{settings.redis_port}")
+        return saver
+    except Exception as e:
+        logger.info(f"Redis checkpointer not available ({e}). Using in-memory MemorySaver checkpointer.")
+        return MemorySaver()
 
+redis_checkpointer = get_checkpointer()
 app = workflow.compile(checkpointer=redis_checkpointer)
