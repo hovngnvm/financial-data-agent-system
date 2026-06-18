@@ -6,19 +6,30 @@ import pandas as pd
 from qdrant_client.models import Prefetch, FusionQuery, Fusion
 
 from src.database import db_manager
-from src.vector_db import qdrant_client, COLLECTION_NAME, get_embedding_model, get_reranking_model, _text_to_sparse_vector
+from src.vector_db import vector_db_manager
 from src.config import settings
 from src.utils.logger import get_logger
+
+DEFAULT_PRICES_LIMIT: int = 30
+RAG_PREFETCH_LIMIT: int = 10
+RERANK_SCORE_THRESHOLD: float = 0.1
+MAX_RETRIEVED_DOCS: int = 2
+SMA_FAST_PERIOD: int = 5
+SMA_SLOW_PERIOD: int = 20
+RSI_PERIOD: int = 14
+MACD_FAST_SPAN: int = 12
+MACD_SLOW_SPAN: int = 26
+MACD_SIGNAL_SPAN: int = 9
 
 logger = get_logger(__name__)
 
 
-def tool_get_ticker_prices(ticker: str, limit: int = 30) -> tuple[list[dict], str | None]:
+def tool_get_ticker_prices(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict], str | None]:
     """Semantic Layer Tool: Safely retrieves price history (timestamp, price, volume) for a specific symbol from ClickHouse."""
     try:
         df = db_manager.client.query_df(
-            "SELECT timestamp, symbol, price, volume FROM prices WHERE symbol = %(symbol)s OR symbol LIKE %(symbol_pattern)s ORDER BY timestamp DESC LIMIT %(limit)s",
-            parameters={"symbol": ticker, "symbol_pattern": f"{ticker}%", "limit": limit}
+            "SELECT timestamp, symbol, price, volume FROM prices WHERE upper(symbol) = upper(%(symbol)s) ORDER BY timestamp DESC LIMIT %(limit)s",
+            parameters={"symbol": ticker, "limit": limit}
         )
         if df.empty:
             return [], None
@@ -28,12 +39,12 @@ def tool_get_ticker_prices(ticker: str, limit: int = 30) -> tuple[list[dict], st
         logger.error(f"Error in tool_get_ticker_prices: {e}")
         return [], str(e)
 
-def tool_get_ticker_indicators(ticker: str, limit: int = 30) -> tuple[list[dict], str | None]:
+def tool_get_ticker_indicators(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict], str | None]:
     """Semantic Layer Tool: Safely retrieves technical indicators (SMA_5, SMA_20, RSI, MACD, MACD_Signal) for a specific symbol from ClickHouse."""
     try:
         df = db_manager.client.query_df(
-            "SELECT timestamp, symbol, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal FROM prices WHERE symbol = %(symbol)s OR symbol LIKE %(symbol_pattern)s ORDER BY timestamp DESC LIMIT %(limit)s",
-            parameters={"symbol": ticker, "symbol_pattern": f"{ticker}%", "limit": limit}
+            "SELECT timestamp, symbol, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal FROM prices WHERE upper(symbol) = upper(%(symbol)s) ORDER BY timestamp DESC LIMIT %(limit)s",
+            parameters={"symbol": ticker, "limit": limit}
         )
         if df.empty:
             return [], None
@@ -46,17 +57,17 @@ def tool_get_ticker_indicators(ticker: str, limit: int = 30) -> tuple[list[dict]
 def tool_semantic_rag_search(processed_query: str) -> str:
     """Performs hybrid dense-sparse vector search and cross-encoder reranking on Qdrant knowledge base."""
     try:
-        dense_vector = get_embedding_model().encode(processed_query).tolist()
-        sparse_vector = _text_to_sparse_vector(processed_query)
+        dense_vector = vector_db_manager.get_embedding_model().encode(processed_query).tolist()
+        sparse_vector = vector_db_manager.text_to_sparse_vector(processed_query)
         
-        prefetch_dense = Prefetch(query=dense_vector, limit=10)
-        prefetch_sparse = Prefetch(query=sparse_vector, using="text-sparse", limit=10)
+        prefetch_dense = Prefetch(query=dense_vector, limit=RAG_PREFETCH_LIMIT)
+        prefetch_sparse = Prefetch(query=sparse_vector, using="text-sparse", limit=RAG_PREFETCH_LIMIT)
         
-        hybrid_response = qdrant_client.query_points(
-            collection_name=COLLECTION_NAME,
+        hybrid_response = vector_db_manager.client.query_points(
+            collection_name=vector_db_manager.collection_name,
             prefetch=[prefetch_dense, prefetch_sparse],
             query=FusionQuery(fusion=Fusion.RRF),
-            limit=10
+            limit=RAG_PREFETCH_LIMIT
         )
         search_results = hybrid_response.points if hybrid_response else []
         
@@ -64,7 +75,7 @@ def tool_semantic_rag_search(processed_query: str) -> str:
             return "No related macro-financial documents found in Vector DB."
             
         rerank_pairs = [(processed_query, res.payload.get('text', '')) for res in search_results]
-        scores = get_reranking_model().predict(rerank_pairs)
+        scores = vector_db_manager.get_reranking_model().predict(rerank_pairs)
         
         ranked_docs = []
         for idx, score in enumerate(scores):
@@ -79,7 +90,7 @@ def tool_semantic_rag_search(processed_query: str) -> str:
         final_context_list = []
         
         for doc in ranked_docs:
-            if doc["rerank_score"] < 0.1: 
+            if doc["rerank_score"] < RERANK_SCORE_THRESHOLD: 
                 continue
             context_hash = doc["parent_context"][:150]
             if context_hash not in seen_contexts:
@@ -87,7 +98,7 @@ def tool_semantic_rag_search(processed_query: str) -> str:
                 final_context_list.append(
                     f"Context: {doc['parent_context']} (Source: {doc['source']} | Score: {doc['rerank_score']:.2f})"
                 )
-            if len(final_context_list) >= 2:
+            if len(final_context_list) >= MAX_RETRIEVED_DOCS:
                 break
 
         return "\n\n".join(final_context_list)
@@ -97,7 +108,12 @@ def tool_semantic_rag_search(processed_query: str) -> str:
 
 OUTPUT_CHART_PATH = settings.chart_file_path
 
-def tool_generate_market_chart(ticker: str, chart_type: str = "comprehensive", limit: int = 30) -> str:
+def tool_generate_market_chart(
+    ticker: str,
+    chart_type: str = "comprehensive",
+    limit: int = 30,
+    output_path: str | None = None
+) -> str:
     """
     Dynamic Financial Chart Generator: Renders multi-panel technical analysis charts.
     Supported chart_type:
@@ -111,12 +127,23 @@ def tool_generate_market_chart(ticker: str, chart_type: str = "comprehensive", l
         return "No valid ticker specified for chart generation."
         
     chart_type = chart_type.lower() if chart_type else "comprehensive"
+    target_path = output_path or OUTPUT_CHART_PATH
     fig = None
     
     try:
         df = db_manager.client.query_df(
-            "SELECT timestamp, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal FROM prices WHERE symbol = %(symbol)s OR symbol LIKE %(symbol_pattern)s ORDER BY timestamp ASC LIMIT %(limit)s",
-            parameters={"symbol": ticker, "symbol_pattern": f"{ticker}%", "limit": limit}
+            """
+            SELECT timestamp, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal
+            FROM (
+                SELECT timestamp, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal
+                FROM prices
+                WHERE upper(symbol) = upper(%(symbol)s)
+                ORDER BY timestamp DESC
+                LIMIT %(limit)s
+            )
+            ORDER BY timestamp ASC
+            """,
+            parameters={"symbol": ticker, "limit": limit}
         )
         
         if df.empty:
@@ -128,7 +155,7 @@ def tool_generate_market_chart(ticker: str, chart_type: str = "comprehensive", l
         if df.empty:
             return f"Invalid timestamp records for {ticker}."
 
-        Path(OUTPUT_CHART_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(target_path).parent.mkdir(parents=True, exist_ok=True)
         
         # 1. RSI Chart Mode (2 Subplots)
         if chart_type == "rsi":
@@ -239,8 +266,8 @@ def tool_generate_market_chart(ticker: str, chart_type: str = "comprehensive", l
 
         fig.autofmt_xdate(rotation=15)
         fig.tight_layout()
-        fig.savefig(OUTPUT_CHART_PATH, dpi=120)
-        return f"Rendered {chart_type} chart successfully at '{OUTPUT_CHART_PATH}'."
+        fig.savefig(target_path, dpi=120)
+        return f"Rendered {chart_type} chart successfully at '{target_path}'."
         
     except Exception as e:
         logger.error(f"Failed to render chart for {ticker}: {e}")
@@ -261,21 +288,25 @@ def tool_calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     
     df = df.sort_values(['symbol', 'timestamp']).reset_index(drop=True)
 
-    df['SMA_5'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(5, min_periods=1).mean())
-    df['SMA_20'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(20, min_periods=1).mean())
+    df['SMA_5'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(SMA_FAST_PERIOD, min_periods=1).mean())
+    df['SMA_20'] = df.groupby('symbol')['price'].transform(lambda x: x.rolling(SMA_SLOW_PERIOD, min_periods=1).mean())
     
-    def calc_rsi(series):
-        if len(series) < 14: 
-            return 50.0
+    def calc_rsi(series: pd.Series) -> pd.Series:
+        if len(series) < RSI_PERIOD: 
+            return pd.Series(50.0, index=series.index)
         delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(RSI_PERIOD, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(RSI_PERIOD, min_periods=1).mean()
         rs = gain / (loss + 1e-9)
         return 100 - (100 / (1 + rs))
 
     df['RSI'] = df.groupby('symbol')['price'].transform(calc_rsi)
     
-    df['MACD'] = df.groupby('symbol')['price'].transform(lambda x: x.ewm(span=12, adjust=False).mean() - x.ewm(span=26, adjust=False).mean())
-    df['MACD_Signal'] = df.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
+    df['MACD'] = df.groupby('symbol')['price'].transform(
+        lambda x: x.ewm(span=MACD_FAST_SPAN, adjust=False).mean() - x.ewm(span=MACD_SLOW_SPAN, adjust=False).mean()
+    )
+    df['MACD_Signal'] = df.groupby('symbol')['MACD'].transform(
+        lambda x: x.ewm(span=MACD_SIGNAL_SPAN, adjust=False).mean()
+    )
     df = df.bfill().ffill()
     return df

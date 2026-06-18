@@ -11,6 +11,7 @@ from telegram.ext import (
     ContextTypes
 )
 from langchain_core.messages import HumanMessage
+from src.agent.callbacks import get_langfuse_handler
 from src.config import settings
 from src.utils.logger import get_logger
 from src.agent.graph import app, redis_checkpointer
@@ -29,6 +30,19 @@ PROVIDER_LABELS = {
     "gemini": "⚡ Google Gemini (1.5 Flash)",
     "deepseek": "🚀 DeepSeek (V3)"
 }
+
+async def _send_and_cleanup_chart(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, chart_path: str | None, caption: str
+) -> None:
+    """Delivers generated market chart image to user and unlinks temporary file."""
+    target_chart = chart_path or CHART_FILE_PATH
+    if target_chart and Path(target_chart).exists():
+        await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+        try:
+            with open(target_chart, "rb") as chart_img:
+                await context.bot.send_photo(chat_id=chat_id, photo=chart_img, caption=caption)
+        finally:
+            Path(target_chart).unlink(missing_ok=True)
 
 def get_model_keyboard(current_provider: str) -> InlineKeyboardMarkup:
     """Constructs interactive Inline Keyboard buttons for LLM model selection."""
@@ -110,12 +124,11 @@ async def handle_model_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(text=updated_text, reply_markup=new_keyboard, parse_mode="Markdown")
         logger.info(f"User {chat_id} switched analyst LLM provider to: {new_provider}")
 
-async def process_agent_workflow(user_message: str, chat_id: int) -> str:
+async def process_agent_workflow(user_message: str, chat_id: int) -> tuple[str, str | None]:
     """
     Asynchronously invokes the LangGraph workflow with the user's selected LLM provider and traces via Langfuse.
     """
     provider = USER_MODEL_PREFERENCES.get(chat_id, settings.analyst_llm_provider)
-    from src.agent.callbacks import get_langfuse_handler
     handler = get_langfuse_handler()
     callbacks = [handler] if handler else []
     
@@ -130,16 +143,17 @@ async def process_agent_workflow(user_message: str, chat_id: int) -> str:
     
     final_state = await app.ainvoke(inputs, config=config)
     
-    # Ensure immediate delivery of telemetry traces to Langfuse
     if handler and hasattr(handler, "langfuse") and handler.langfuse:
         try:
             handler.langfuse.flush()
         except Exception:
             pass
             
+    chart_path = final_state.get("chart_file_path") if final_state else None
+    
     if final_state and "messages" in final_state and final_state["messages"]:
-        return final_state["messages"][-1].content
-    return "Agent workflow did not produce a response. Please try again."
+        return final_state["messages"][-1].content, chart_path
+    return "Agent workflow did not produce a response. Please try again.", chart_path
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Processes natural language text queries received from the user."""
@@ -149,19 +163,11 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     
     try:
-        Path(CHART_FILE_PATH).unlink(missing_ok=True)
-            
-        ai_response = await process_agent_workflow(user_text, chat_id)
+        ai_response, chart_path = await process_agent_workflow(user_text, chat_id)
         await update.message.reply_text(ai_response)
-        
-        if Path(CHART_FILE_PATH).exists():
-            await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-            with open(CHART_FILE_PATH, "rb") as chart_img:
-                await update.message.reply_photo(
-                    photo=chart_img,
-                    caption="Technical analysis chart generated for your query."
-                )
-                
+        await _send_and_cleanup_chart(
+            context, chat_id, chart_path, caption="Technical analysis chart generated for your query."
+        )
     except Exception as e:
         logger.error(f"Error processing Telegram user message: {e}")
         await update.message.reply_text(f"Error during agent execution: {e}")
@@ -183,14 +189,9 @@ async def handle_analyze_command(update: Update, context: ContextTypes.DEFAULT_T
     
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
-        Path(CHART_FILE_PATH).unlink(missing_ok=True)
-            
-        ai_response = await process_agent_workflow(simulated_message, chat_id)
+        ai_response, chart_path = await process_agent_workflow(simulated_message, chat_id)
         await update.message.reply_text(ai_response)
-        
-        if Path(CHART_FILE_PATH).exists():
-            with open(CHART_FILE_PATH, "rb") as chart_img:
-                await update.message.reply_photo(photo=chart_img, caption=f"Technical analysis chart: {ticker}")
+        await _send_and_cleanup_chart(context, chat_id, chart_path, caption=f"Technical analysis chart: {ticker}")
     except Exception as e:
         logger.error(f"Error executing /analyze for {ticker}: {e}")
         await update.message.reply_text(f"Error: {e}")
@@ -204,8 +205,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def post_init(application: Application) -> None:
     """Performs async setup for the LangGraph Redis checkpointer."""
-    await redis_checkpointer.asetup()
-    logger.info("LangGraph AsyncRedisSaver setup completed.")
+    if hasattr(redis_checkpointer, "asetup"):
+        await redis_checkpointer.asetup()
+        logger.info("LangGraph AsyncRedisSaver setup completed successfully.")
+    else:
+        logger.info(f"LangGraph checkpointer ({type(redis_checkpointer).__name__}) initialized (no async setup required).")
 
 def main() -> None:
     """Starts the Telegram Bot Polling Engine."""
