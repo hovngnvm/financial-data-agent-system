@@ -5,6 +5,7 @@ from src.agent.state import AgentState
 from src.config import settings
 from src.agent.prompts import SUPERVISOR_MULTI_INTENT_ROUTER_PROMPT
 from src.agent.router import semantic_router
+from src.agent.callbacks import get_langfuse_handler
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +20,14 @@ class MultiIntentRoutePlan(BaseModel):
         default=None,
         description="Chart mode: comprehensive, price_sma, rsi, macd, volume"
     )
+
+_driver_llm = None
+
+def get_driver_llm():
+    global _driver_llm
+    if _driver_llm is None:
+        _driver_llm = ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(MultiIntentRoutePlan)
+    return _driver_llm
 
 async def node_driver(state: AgentState) -> dict[str, Any]:
     """
@@ -38,10 +47,7 @@ async def node_driver(state: AgentState) -> dict[str, Any]:
     except Exception as e:
         logger.warning(f"Semantic router fast-path evaluation error: {e}. Falling back to LLM.")
 
-    # Fallback to LLM Structured Output Decomposition
-    llm = ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(MultiIntentRoutePlan)
-    
-    from src.agent.callbacks import get_langfuse_handler
+    llm = get_driver_llm()
     handler = get_langfuse_handler()
     call_config = {"callbacks": [handler]} if handler else {}
     
