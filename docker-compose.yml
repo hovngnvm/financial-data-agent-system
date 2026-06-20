@@ -37,9 +37,9 @@ services:
     container_name: clickhouse
     restart: always
     environment:
-      - CLICKHOUSE_USER=finuser
-      - CLICKHOUSE_PASSWORD=finpassword
-      - CLICKHOUSE_DB=finance_db
+      - CLICKHOUSE_USER=${DB_USER:-finuser}
+      - CLICKHOUSE_PASSWORD=${DB_PASSWORD:-finpassword}
+      - CLICKHOUSE_DB=${DB_NAME:-finance_db}
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -51,9 +51,9 @@ services:
     container_name: langfuse_db
     restart: always
     environment:
-      POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: secret_password
-      POSTGRES_DB: langfuse
+      POSTGRES_USER: ${LANGFUSE_DB_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-secret_password}
+      POSTGRES_DB: ${LANGFUSE_DB_NAME:-langfuse}
     ports:
       - "5433:5432"
     volumes:
@@ -69,20 +69,20 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://langfuse:secret_password@langfuse_db:5432/langfuse
-      - NEXTAUTH_URL=http://localhost:3000
-      - NEXTAUTH_SECRET=secret_salt_string_for_auth_encryption
-      - SALT=secret_salt_for_password_hashing
-      - TELEMETRY_ENABLED=false # Disable telemetry for privacy and security
-      
+      - DATABASE_URL=postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-secret_password}@langfuse_db:5432/${LANGFUSE_DB_NAME:-langfuse}
+      - NEXTAUTH_URL=${LANGFUSE_HOST:-http://localhost:3000}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-secret_salt_string_for_auth_encryption}
+      - SALT=${SALT:-secret_salt_for_password_hashing}
+      - TELEMETRY_ENABLED=false
+
   redis:
-      image: redis/redis-stack-server:latest
-      container_name: redis
-      restart: always
-      ports:
-        - "6379:6379"
-      volumes:
-        - redis_cache_data:/data
+    image: redis/redis-stack-server:latest
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_cache_data:/data
 
   qdrant:
     image: qdrant/qdrant:v1.11.0
