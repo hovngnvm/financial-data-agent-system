@@ -27,39 +27,28 @@ def test_semantic_router_ticker_extraction():
     assert semantic_router.extract_ticker("Tin tức vĩ mô chung") == "UNKNOWN"
     assert semantic_router.extract_ticker("Vẽ đồ thị FPT") == "FPT"
 
-def test_semantic_router_single_intents():
+@pytest.mark.parametrize("query,expected_intent,expected_target,expected_chat", [
+    ("Lịch sử giá và khối lượng giao dịch của SSI", "FETCH_PRICE", "SSI", False),
+    ("Chỉ số RSI và đường trung bình SMA của BTC", "FETCH_INDICATOR", "BTC", False),
+    ("Tin tức kinh tế vĩ mô và báo cáo tài chính mới nhất", "FETCH_NEWS", "UNKNOWN", False),
+    ("Xin chào bạn, hôm nay thời tiết thế nào?", "CHITCHAT", "UNKNOWN", True),
+])
+def test_semantic_router_single_intents(query, expected_intent, expected_target, expected_chat):
     """Verifies precision across single intent categories."""
-    # 1. Price Intent
-    price_res = semantic_router.fast_route("Lịch sử giá và khối lượng giao dịch của SSI")
-    assert price_res is not None
-    assert "FETCH_PRICE" in price_res["activated_intents"]
-    assert price_res["current_target"] == "SSI"
-    assert price_res["chat"] is False
+    res = semantic_router.fast_route(query)
+    assert res is not None
+    assert expected_intent in res["activated_intents"]
+    if expected_target != "UNKNOWN":
+        assert res["current_target"] == expected_target
+    assert res["chat"] is expected_chat
 
-    # 2. Indicator Intent
-    ind_res = semantic_router.fast_route("Chỉ số RSI và đường trung bình SMA của BTC")
-    assert ind_res is not None
-    assert "FETCH_INDICATOR" in ind_res["activated_intents"]
-    assert ind_res["current_target"] == "BTC"
-
-    # 3. News Intent
-    news_res = semantic_router.fast_route("Tin tức kinh tế vĩ mô và báo cáo tài chính mới nhất")
-    assert news_res is not None
-    assert "FETCH_NEWS" in news_res["activated_intents"]
-
-    # 4. Chart Intent
+def test_semantic_router_chart_intent():
+    """Verifies chart intent and mode extraction."""
     chart_res = semantic_router.fast_route("Vẽ biểu đồ MACD phân kỳ của mã VND")
     assert chart_res is not None
     assert "RENDER_CHART" in chart_res["activated_intents"]
     assert chart_res["chart_mode"] == "macd"
     assert chart_res["current_target"] == "VND"
-
-    # 5. Chitchat Intent
-    chat_res = semantic_router.fast_route("Xin chào bạn, hôm nay thời tiết thế nào?")
-    assert chat_res is not None
-    assert chat_res["activated_intents"] == ["CHITCHAT"]
-    assert chat_res["chat"] is True
-    assert chat_res["current_target"] == "UNKNOWN"
 
 def test_semantic_router_multi_intent_clause_splitting():
     """Verifies Multi-Intent detection via Clause Splitting on compound queries."""

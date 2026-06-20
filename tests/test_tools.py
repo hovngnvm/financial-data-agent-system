@@ -9,6 +9,7 @@ from src.tools import (
     tool_generate_market_chart,
     tool_semantic_rag_search
 )
+from src.vector_db import vector_db_manager
 
 def test_tool_calculate_technical_indicators():
     data = {
@@ -94,10 +95,36 @@ def test_tool_generate_market_chart_unknown_ticker():
     msg = tool_generate_market_chart("UNKNOWN")
     assert "No valid ticker specified" in msg
 
+def test_tool_generate_market_chart_dynamic_output_path(mocker, tmp_path):
+    mock_df = pd.DataFrame({
+        "timestamp": pd.date_range(start="2026-01-01", periods=5, freq="D"),
+        "symbol": ["BTC"] * 5,
+        "price": [50000.0 + i * 500 for i in range(5)],
+        "volume": [100.0] * 5,
+        "SMA_5": [50000.0] * 5,
+        "SMA_20": [49000.0] * 5,
+        "RSI": [50.0] * 5,
+        "MACD": [10.0] * 5,
+        "MACD_Signal": [5.0] * 5
+    })
+    mock_client = MagicMock()
+    mock_client.query_df.return_value = mock_df
+    mocker.patch("src.tools.db_manager._client", mock_client)
+    
+    custom_path = str(tmp_path / "custom_chart.png")
+    msg = tool_generate_market_chart("BTC", chart_type="price_sma", limit=5, output_path=custom_path)
+    assert "Rendered price_sma chart successfully" in msg
+    assert Path(custom_path).exists()
+
+
 def test_tool_semantic_rag_search_empty(mocker):
-    mocker.patch("src.tools.qdrant_client.query_points", return_value=MagicMock(points=[]))
-    mocker.patch("src.tools.get_embedding_model")
-    mocker.patch("src.tools._text_to_sparse_vector", return_value={"indices": [], "values": []})
+    mock_qdrant = MagicMock()
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
+    mocker.patch.object(vector_db_manager, "client", mock_qdrant)
+    mock_model = MagicMock()
+    mock_model.encode.return_value.tolist.return_value = [0.1] * 384
+    mocker.patch.object(vector_db_manager, "get_embedding_model", return_value=mock_model)
+    mocker.patch.object(vector_db_manager, "text_to_sparse_vector", return_value={"indices": [], "values": []})
     
     result = tool_semantic_rag_search("Macroeconomic forecast")
     assert "No related macro-financial documents found" in result
