@@ -1,8 +1,8 @@
 import datetime
 import random
 import pandas as pd
-from src.database import ingest_data_to_db
-from src.vector_db import ingest_data_to_qdrant
+from src.database import db_manager
+from src.vector_db import vector_db_manager
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -63,7 +63,7 @@ def seed_clickhouse() -> None:
     df_final = df_final.sort_values(by=["timestamp", "symbol"]).reset_index(drop=True)
     df_final.columns = df_final.columns.str.lower()
     
-    ingest_data_to_db(df_final, mode="replace")
+    db_manager.ingest_df(df_final, mode="replace")
     logger.info("ClickHouse seed data successfully ingested.")
 
 def seed_qdrant() -> None:
@@ -96,7 +96,7 @@ def seed_qdrant() -> None:
         }
     ]
     
-    ingest_data_to_qdrant(knowledge_chunks)
+    vector_db_manager.ingest_data(knowledge_chunks)
     logger.info("Qdrant Vector DB seed data successfully ingested.")
 
 if __name__ == "__main__":

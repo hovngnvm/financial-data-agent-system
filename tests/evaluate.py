@@ -20,7 +20,7 @@ from qdrant_client.models import Distance, VectorParams, SparseVectorParams, Spa
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from src.utils.chunking import advanced_parent_child_chunker
-from src.vector_db import _text_to_sparse_vector
+from src.vector_db import vector_db_manager
 
 # Sample financial text containing narrative analysis and Markdown tables for benchmark testing
 SAMPLE_FINANCIAL_DOC = """
@@ -108,7 +108,7 @@ def setup_in_memory_benchmark_store():
     for idx, ch in enumerate(chunks):
         text_content = ch["text"]
         dense_emb = dense_model.encode(text_content).tolist()
-        sparse_emb = _text_to_sparse_vector(text_content)
+        sparse_emb = vector_db_manager.text_to_sparse_vector(text_content)
         
         points.append(
             PointStruct(
@@ -132,7 +132,7 @@ def evaluate_retrieval_query(client: QdrantClient, collection_name: str, query: 
     rerank_model = get_eval_rerank_model()
     
     dense_vec = dense_model.encode(query).tolist()
-    sparse_vec = _text_to_sparse_vector(query)
+    sparse_vec = vector_db_manager.text_to_sparse_vector(query)
     
     prefetch_dense = Prefetch(query=dense_vec, limit=6)
     prefetch_sparse = Prefetch(query=sparse_vec, using="text-sparse", limit=6)
@@ -275,7 +275,7 @@ def run_3layer_rag_evaluation():
     )
     
     if passed_gate:
-        print("\nQuality Gate Status: PASSED (All 3 layers met enterprise production thresholds)")
+        print("\nQuality Gate Status: PASSED (All 3 layers met production quality thresholds)")
         return True
     else:
         print("\nQuality Gate Status: FAILED (Evaluation scores below threshold)")

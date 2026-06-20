@@ -1,23 +1,18 @@
 import json
+from datetime import datetime
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 import pandas as pd
 from aiokafka import ConsumerRecord
 
-from src.consumer import process_market_batch
+from src.consumer import process_market_batch, PriceCacheManager
 from src.config import settings
 from src.database import db_manager
-
-@pytest.fixture
-def anyio_backend():
-    return 'asyncio'
 
 @pytest.fixture(autouse=True)
 def mock_db_client(mocker):
     mock_client = MagicMock()
-    # Mock return value of query_df to be empty DataFrame by default
     mock_client.query_df.return_value = pd.DataFrame()
-    # Patch get_client and db_manager._client
     mocker.patch("clickhouse_connect.get_client", return_value=mock_client)
     db_manager._client = mock_client
     yield mock_client
@@ -25,7 +20,7 @@ def mock_db_client(mocker):
 
 @pytest.mark.anyio
 async def test_process_market_batch_success(mocker):
-    mock_ingest = mocker.patch("src.consumer.ingest_data_to_db")
+    mock_ingest = mocker.patch.object(db_manager, "ingest_df")
     mocker.patch("src.consumer.tool_calculate_technical_indicators", side_effect=lambda df: df)
     
     mock_producer = AsyncMock()
@@ -61,7 +56,7 @@ async def test_process_market_batch_success(mocker):
 
 @pytest.mark.anyio
 async def test_process_market_batch_malformed_goes_to_dlq(mocker):
-    mock_ingest = mocker.patch("src.consumer.ingest_data_to_db")
+    mock_ingest = mocker.patch.object(db_manager, "ingest_df")
     mock_producer = AsyncMock()
     
     bad_msg = ConsumerRecord(
@@ -93,8 +88,7 @@ async def test_process_market_batch_malformed_goes_to_dlq(mocker):
 @pytest.mark.anyio
 async def test_process_market_batch_db_error_raises_exception(mocker):
     mocker.patch("src.consumer.tool_calculate_technical_indicators", side_effect=lambda df: df)
-    # Mock DB ingest to throw an error
-    mock_ingest = mocker.patch("src.consumer.ingest_data_to_db", side_effect=Exception("DB Connection Timeout"))
+    mock_ingest = mocker.patch.object(db_manager, "ingest_df", side_effect=Exception("DB Connection Timeout"))
     
     mock_producer = AsyncMock()
     
@@ -127,9 +121,6 @@ async def test_process_market_batch_db_error_raises_exception(mocker):
 
 @pytest.mark.anyio
 async def test_price_cache_manager_in_memory_fallback(mock_db_client, mocker):
-    from src.consumer import PriceCacheManager
-    from datetime import datetime
-    
     cache = PriceCacheManager()
     cache.use_redis = False  # Force in-memory fallback
     
