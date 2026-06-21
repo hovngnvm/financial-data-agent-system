@@ -1,7 +1,7 @@
 import re
 from typing import Any
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from src.vector_db import vector_db_manager
 from src.config import settings
 from src.utils.logger import get_logger
 
@@ -19,30 +19,22 @@ SPLIT_CONJUNCTIONS_REGEX = re.compile(r"\s*(?:và|đồng thời|cùng với)\s*
 # Canonical intent prototypes for vector centroid calculation
 INTENT_UTTERANCES: dict[str, list[str]] = {
     "FETCH_PRICE": [
-        "giá cổ phiếu hôm nay bao nhiêu",
-        "lịch sử giá giao dịch",
-        "cho xem khối lượng volume giao dịch",
-        "giá mở cửa giá đóng cửa",
-        "biến động giá hôm nay",
-        "stock price quote history volume",
-        "giá thị trường hiện tại"
+        "Lịch sử giá và khối lượng giao dịch cổ phiếu SSI",
+        "Tra cứu bảng giá khớp lệnh và diễn biến giá",
+        "Xem giá đóng cửa hôm nay",
+        "Biến động giá và thanh khoản thị trường"
     ],
     "FETCH_INDICATOR": [
-        "chỉ số rsi đang ở mức nào",
-        "đường trung bình sma 20 ngày",
-        "tín hiệu macd phân kỳ",
-        "chỉ báo kỹ thuật quá mua quá bán",
-        "xu hướng kỹ thuật technical indicators",
-        "rsi macd moving average signals",
-        "tín hiệu đường ma"
+        "Chỉ số kỹ thuật RSI và đường trung bình SMA của BTC",
+        "Tín hiệu kỹ thuật MACD, quá mua quá bán và phân kỳ",
+        "Tính toán đường trung bình động MA20 và MA50",
+        "Phân tích chỉ báo động lượng và sức mạnh xu hướng"
     ],
     "FETCH_NEWS": [
-        "tin tức kinh tế vĩ mô mới nhất",
-        "báo cáo tài chính doanh nghiệp",
-        "triển vọng ngành thép kinh doanh",
-        "chính sách lãi suất ngân hàng nhà nước fed",
-        "dự án dung quất thông tin sự kiện",
-        "macroeconomic financial news report outlook"
+        "Tin tức kinh tế vĩ mô và tài chính mới nhất",
+        "Cập nhật sự kiện doanh nghiệp và báo cáo tài chính",
+        "Thông tin thị trường, lãi suất ngân hàng và chính sách tiền tệ",
+        "Tin vĩ mô và phân tích cơ bản ngành"
     ],
     "RENDER_CHART": [
         "vẽ biểu đồ giá",
@@ -53,17 +45,10 @@ INTENT_UTTERANCES: dict[str, list[str]] = {
         "vẽ đồ thị phân tích kỹ thuật"
     ],
     "CHITCHAT": [
-        "xin chào bạn",
-        "chào bot",
-        "bạn là ai",
-        "hôm nay thế nào",
-        "hôm nay thời tiết thế nào",
-        "cảm ơn bạn nhé",
-        "tạm biệt bot",
-        "hello hi there how are you",
-        "bạn có thể làm được những gì",
-        "trò chuyện tâm sự một chút",
-        "chúc một ngày tốt lành"
+        "Xin chào bạn, hôm nay thời tiết thế nào?",
+        "Bạn là ai và có thể giúp gì cho tôi?",
+        "Cảm ơn bạn rất nhiều, tạm biệt nhé",
+        "Trò chuyện phiếm hoặc hỏi thăm thông thường"
     ]
 }
 
@@ -73,11 +58,11 @@ ROUTER_FALLBACK_MARGIN: float = 0.10
 class SemanticVectorRouter:
     """
     Sub-3ms Fast-Path Intent Router:
-    Uses precomputed dense vector centroids from all-MiniLM-L6-v2 to evaluate Cosine Similarity
+    Uses precomputed dense vector centroids from shared all-MiniLM-L6-v2 to evaluate Cosine Similarity
     with Multi-Threshold support and Clause Splitting for compound queries.
     """
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        self.model = SentenceTransformer(model_name)
+    def __init__(self, model: Any | None = None):
+        self.model = model or vector_db_manager.get_embedding_model()
         self.intent_centroids: dict[str, np.ndarray] = {}
         self._precompute_centroids()
 
@@ -172,8 +157,7 @@ class SemanticVectorRouter:
             "activated_intents": activated_list,
             "chart_mode": chart_mode,
             "chat": is_chitchat,
-            "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE",
-            "routing_source": "SEMANTIC_VECTOR_FAST_PATH"
+            "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE"
         }
 
-semantic_router = SemanticVectorRouter(settings.embedding_model_name)
+semantic_router = SemanticVectorRouter()

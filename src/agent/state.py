@@ -18,9 +18,7 @@ class AgentState(TypedDict):
     
     activated_intents: list[str]
     chart_mode: str | None
-    routing_source: str | None
     
-    error_log: str
     retry_count: int
     
     next_worker: str
