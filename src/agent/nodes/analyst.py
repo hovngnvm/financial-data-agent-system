@@ -129,20 +129,19 @@ async def node_final_analyst(state: AgentState) -> dict[str, Any]:
     handler = get_langfuse_handler()
     call_config = {"callbacks": [handler]} if handler else {}
     
-    try:
-        raw_response = await llm_analyst.ainvoke(
-            f"{system_prompt}\n\n{prompt_payload}",
-            config=call_config
-        )
-        final_response = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
-    except Exception as e:
-        logger.error(f"Error during LLM inference with provider '{selected_provider}': {e}. Retrying with local Ollama.")
-        fallback_llm = OllamaLLM(model=settings.llm_analyst_model, temperature=settings.analyst_temperature)
-        raw_response = await fallback_llm.ainvoke(
-            f"{system_prompt}\n\n{prompt_payload}",
-            config=call_config
-        )
-        final_response = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
+    candidates = [llm_analyst]
+    if selected_provider != "local":
+        candidates.append(get_analyst_llm("local"))
+
+    final_response = "Xin lỗi, hệ thống không thể tạo phản hồi lúc này."
+    full_prompt = f"{system_prompt}\n\n{prompt_payload}"
+    for llm in candidates:
+        try:
+            raw_response = await llm.ainvoke(full_prompt, config=call_config)
+            final_response = raw_response.content if hasattr(raw_response, "content") else str(raw_response)
+            break
+        except Exception as e:
+            logger.warning(f"Analyst LLM invocation failed: {e}")
 
     return {"messages": [AIMessage(content=final_response)], "next_worker": "PURGE"}
 
@@ -156,7 +155,6 @@ async def node_purge_state(state: AgentState) -> dict[str, Any]:
         "chart_status_msg": "",
         "activated_intents": [],
         "chart_mode": None,
-        "error_log": "",
         "retry_count": 0,
         "next_worker": "FINISH"
     }

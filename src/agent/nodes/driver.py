@@ -1,3 +1,4 @@
+import functools
 from typing import Any
 from pydantic import BaseModel, Field
 from langchain_ollama import ChatOllama
@@ -21,13 +22,9 @@ class MultiIntentRoutePlan(BaseModel):
         description="Chart mode: comprehensive, price_sma, rsi, macd, volume"
     )
 
-_driver_llm = None
-
+@functools.cache
 def get_driver_llm():
-    global _driver_llm
-    if _driver_llm is None:
-        _driver_llm = ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(MultiIntentRoutePlan)
-    return _driver_llm
+    return ChatOllama(model=settings.llm_coder_model, temperature=0).with_structured_output(MultiIntentRoutePlan)
 
 async def node_driver(state: AgentState) -> dict[str, Any]:
     """
@@ -67,8 +64,7 @@ async def node_driver(state: AgentState) -> dict[str, Any]:
             "activated_intents": intents,
             "chart_mode": chart_mode,
             "chat": is_chitchat,
-            "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE",
-            "routing_source": "LLM_STRUCTURED_FALLBACK"
+            "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE"
         }
     except Exception as e:
         logger.warning(f"Supervisor LLM parsing failed: {e}. Defaulting to CHITCHAT.")
@@ -77,6 +73,5 @@ async def node_driver(state: AgentState) -> dict[str, Any]:
             "activated_intents": ["CHITCHAT"],
             "chart_mode": None,
             "chat": True,
-            "next_worker": "FINAL_ANALYST",
-            "routing_source": "ERROR_DEFAULT_CHITCHAT"
+            "next_worker": "FINAL_ANALYST"
         }

@@ -1,6 +1,6 @@
-from typing import Any
+import functools
 import re
-from pydantic import BaseModel, Field
+from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_ollama import OllamaLLM
 from src.agent.state import AgentState
@@ -9,9 +9,6 @@ from src.agent.callbacks import get_langfuse_handler
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-class SecurityCheckResult(BaseModel):
-    status: str = Field(default="SAFE", description="SAFE or MALICIOUS")
 
 SQL_INJECTION_REGEX = re.compile(
     r"(\b(DROP|DELETE|ALTER|TRUNCATE|UPDATE|INSERT|GRANT|REVOKE)\b\s+\b(TABLE|FROM|DATABASE|KEY|INTO)\b)|(--)|(\/\*|\*\/)|(\bUNION\b\s+\bSELECT\b)|(;\s*\b(DROP|DELETE|ALTER)\b)",
@@ -28,13 +25,9 @@ SECURITY_REFUSAL_MESSAGE: str = (
     "Hệ thống đã từ chối xử lý để bảo vệ an ninh hệ thống."
 )
 
-_guard_llm = None
-
+@functools.cache
 def get_guard_llm():
-    global _guard_llm
-    if _guard_llm is None:
-        _guard_llm = OllamaLLM(model=settings.llm_guard_model, temperature=0.0)
-    return _guard_llm
+    return OllamaLLM(model=settings.llm_guard_model, temperature=0.0)
 
 async def node_security_shield(state: AgentState) -> dict[str, Any]:
     """Guardrails: Protect the system from Prompt Injection and malicious attacks (Async)"""
