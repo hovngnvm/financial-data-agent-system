@@ -22,12 +22,13 @@ def preserve_markdown_tables(text: str) -> tuple[str, list[str]]:
     Identifies and isolates Markdown tables.
     Ensures financial numeric tables are not split arbitrarily during chunking.
     """
-    tables = TABLE_REGEX.findall(text)
-    placeholder_text = text
-    for idx, table in enumerate(tables):
-        placeholder_text = placeholder_text.replace(table, f"__TABLE_PLACEHOLDER_{idx}__", 1)
-        
-    return placeholder_text, tables
+    tables = []
+    def _repl(m: re.Match) -> str:
+        idx = len(tables)
+        tables.append(m.group(0))
+        return f"__TABLE_PLACEHOLDER_{idx}__"
+
+    return TABLE_REGEX.sub(_repl, text), tables
 
 def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int = 1200, child_size: int = 250) -> list[dict]:
     """
@@ -60,34 +61,28 @@ def advanced_parent_child_chunker(text: str, source_link: str, parent_size: int 
         
         current_child = []
         current_child_len = 0
+
+        def _add_child(parts: list[str], suffix: str | None = None) -> None:
+            raw = " ".join(parts).strip()
+            if raw:
+                final_prepared_payloads.append({
+                    "text": _restore_tables(raw, preserved_tables),
+                    "parent_text": actual_parent_text,
+                    "source": source_link,
+                    "chunk_hierarchy": f"p{p_idx}-{suffix or f'c{len(final_prepared_payloads)}'}"
+                })
         
         for sentence in sentences:
             current_child.append(sentence)
             current_child_len += len(sentence)
             
             if current_child_len >= child_size:
-                child_text_raw = " ".join(current_child).strip()
-                if child_text_raw:
-                    child_text = _restore_tables(child_text_raw, preserved_tables)
-                    final_prepared_payloads.append({
-                        "text": child_text,
-                        "parent_text": actual_parent_text,
-                        "source": source_link,
-                        "chunk_hierarchy": f"p{p_idx}-c{len(final_prepared_payloads)}"
-                    })
+                _add_child(current_child)
                 current_child = []
                 current_child_len = 0
                 
         if current_child:
-            child_text_raw = " ".join(current_child).strip()
-            if child_text_raw:
-                child_text = _restore_tables(child_text_raw, preserved_tables)
-                final_prepared_payloads.append({
-                    "text": child_text,
-                    "parent_text": actual_parent_text,
-                    "source": source_link,
-                    "chunk_hierarchy": f"p{p_idx}-tail"
-                })
+            _add_child(current_child, "tail")
                 
     return final_prepared_payloads
 

@@ -1,7 +1,8 @@
 import uuid
-import mmh3
+import zlib
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseIndexParams, PointStruct
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from src.config import settings
 from src.utils.logger import get_logger
 
@@ -23,14 +24,12 @@ class VectorDBManager:
     def get_embedding_model(self):
         """Lazy-loaded dense embedding model."""
         if self._embedding_model is None:
-            from sentence_transformers import SentenceTransformer
             self._embedding_model = SentenceTransformer(settings.embedding_model_name)
         return self._embedding_model
 
     def get_reranking_model(self):
         """Lazy-loaded cross-encoder reranking model."""
         if self._reranking_model is None:
-            from sentence_transformers import CrossEncoder
             self._reranking_model = CrossEncoder(settings.rerank_model_name)
         return self._reranking_model
 
@@ -60,7 +59,7 @@ class VectorDBManager:
 
     def text_to_sparse_vector(self, text_content: str) -> dict[str, list]:
         """
-        Hashes raw text tokens consistently into a Qdrant Sparse Vector format (Term Frequency) using mmh3.
+        Hashes raw text tokens consistently into a Qdrant Sparse Vector format (Term Frequency) using zlib.crc32.
         Aggregates frequency weights if hash collisions occur within the bucket space.
         """
         words = text_content.lower().split()
@@ -72,7 +71,7 @@ class VectorDBManager:
                 
         sparse_map = {}
         for word, count in frequency.items():
-            idx = abs(mmh3.hash(word)) % SPARSE_BUCKET_SIZE
+            idx = zlib.crc32(word.encode('utf-8')) % SPARSE_BUCKET_SIZE
             sparse_map[idx] = sparse_map.get(idx, 0.0) + float(count)
             
         return {
@@ -121,5 +120,3 @@ class VectorDBManager:
 
 # Global instance for shared usage
 vector_db_manager = VectorDBManager()
-qdrant_client = vector_db_manager.client
-COLLECTION_NAME = vector_db_manager.collection_name

@@ -1,3 +1,4 @@
+import socket
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -16,17 +17,7 @@ logger = get_logger(__name__)
 def node_join_barrier(state: AgentState) -> dict[str, str]:
     """Barrier Node (Join): Synchronizes parallel agent execution branches before routing to the next step"""
     intents = state.get("activated_intents", [])
-    has_chart_intent = "RENDER_CHART" in intents
-    
-    human_messages = [m for m in state.get("messages", []) if m.type == "human"]
-    user_msg = human_messages[-1].content.lower() if human_messages else ""
-    chart_keywords = ["biểu đồ", "đồ thị", "vẽ", "chart", "graph", "visualize", "draw"]
-    needs_chart = has_chart_intent or any(kw in user_msg for kw in chart_keywords)
-    
-    if needs_chart:
-        return {"next_worker": "CHART_WORKER"}
-    else:
-        return {"next_worker": "FINAL_ANALYST"}
+    return {"next_worker": "CHART_WORKER" if "RENDER_CHART" in intents else "FINAL_ANALYST"}
 
 workflow = StateGraph(AgentState)
 
@@ -57,11 +48,11 @@ def supervisor_fork_router(state: AgentState) -> list[str]:
     branches = []
     
     # Check SQL worker requirement (price, indicators, or chart data)
-    if not intents or any(i in intents for i in ["FETCH_PRICE", "FETCH_INDICATOR", "RENDER_CHART"]):
+    if any(i in intents for i in ["FETCH_PRICE", "FETCH_INDICATOR", "RENDER_CHART"]):
         branches.append("call_sql")
         
     # Check RAG worker requirement (qualitative news context)
-    if not intents or "FETCH_NEWS" in intents:
+    if "FETCH_NEWS" in intents:
         branches.append("call_rag")
         
     return branches if branches else ["call_analyst_direct"]
@@ -92,7 +83,7 @@ workflow.add_edge("rag_worker", "join_barrier")
 # Router 3: Join Barrier Node (Fan-in Check)
 workflow.add_conditional_edges(
     "join_barrier",
-    lambda state: "call_chart" if state["next_worker"] in ["CHART_WORKER", "Chart_Agent"] else "call_analyst",
+    lambda state: "call_chart" if state["next_worker"] == "CHART_WORKER" else "call_analyst",
     {
         "call_chart": "chart_worker",
         "call_analyst": "final_analyst"
@@ -113,7 +104,6 @@ def get_checkpointer():
     otherwise safely falls back to in-memory MemorySaver.
     """
     try:
-        import socket
         # Test if Redis port is open and reachable
         with socket.create_connection((settings.redis_host, settings.redis_port), timeout=1.0):
             pass
