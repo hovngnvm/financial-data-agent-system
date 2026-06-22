@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import NetworkError
@@ -25,10 +24,10 @@ CHART_FILE_PATH = settings.chart_file_path
 USER_MODEL_PREFERENCES: dict[int, str] = {}
 
 PROVIDER_LABELS = {
-    "local": "🖥️ Local Ollama (Qwen 1.5B)",
-    "openai": "🌐 OpenAI (GPT-4o-mini)",
-    "gemini": "⚡ Google Gemini (1.5 Flash)",
-    "deepseek": "🚀 DeepSeek (V3)"
+    "local": "🖥️ Local (Qwen 1.5B)",
+    "openai": "🌐 OpenAI (GPT-4o)",
+    "gemini": "⚡ Google Gemini",
+    "deepseek": "🚀 DeepSeek"
 }
 
 async def _send_and_cleanup_chart(
@@ -46,29 +45,11 @@ async def _send_and_cleanup_chart(
 
 def get_model_keyboard(current_provider: str) -> InlineKeyboardMarkup:
     """Constructs interactive Inline Keyboard buttons for LLM model selection."""
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"{'✅ ' if current_provider == 'local' else ''}🖥️ Local (Qwen 1.5B)",
-                callback_data="set_model:local"
-            ),
-            InlineKeyboardButton(
-                f"{'✅ ' if current_provider == 'openai' else ''}🌐 OpenAI (GPT-4o)",
-                callback_data="set_model:openai"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"{'✅ ' if current_provider == 'gemini' else ''}⚡ Google Gemini",
-                callback_data="set_model:gemini"
-            ),
-            InlineKeyboardButton(
-                f"{'✅ ' if current_provider == 'deepseek' else ''}🚀 DeepSeek",
-                callback_data="set_model:deepseek"
-            )
-        ]
+    btns = [
+        InlineKeyboardButton(f"{'✅ ' if current_provider == p else ''}{lbl}", callback_data=f"set_model:{p}")
+        for p, lbl in PROVIDER_LABELS.items()
     ]
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup([[btns[0], btns[1]], [btns[2], btns[3]]])
 
 async def command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command - Welcomes users to the platform."""

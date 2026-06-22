@@ -2,42 +2,11 @@ import datetime
 import random
 import pandas as pd
 from src.database import db_manager
+from src.tools import tool_calculate_technical_indicators
 from src.vector_db import vector_db_manager
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-def calculate_indicators(group: pd.DataFrame) -> pd.DataFrame:
-    """Computes technical indicators (SMA, MACD, RSI) over a time-series price group."""
-    group = group.sort_values("timestamp")
-    
-    # Simple Moving Averages
-    group["SMA_5"] = group["price"].rolling(window=5).mean()
-    group["SMA_20"] = group["price"].rolling(window=20).mean()
-    
-    # Moving Average Convergence Divergence (MACD)
-    ema_12 = group["price"].ewm(span=12, adjust=False).mean()
-    ema_26 = group["price"].ewm(span=26, adjust=False).mean()
-    group["MACD"] = ema_12 - ema_26
-    group["MACD_Signal"] = group["MACD"].ewm(span=9, adjust=False).mean()
-    
-    # Relative Strength Index (RSI - 14 period)
-    delta = group["price"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / (loss + 1e-9)
-    group["RSI"] = 100 - (100 / (1 + rs))
-    
-    # Round metrics for neat database persistence
-    group["price"] = group["price"].round(2)
-    group["volume"] = group["volume"].round(2)
-    group["SMA_5"] = group["SMA_5"].round(2)
-    group["SMA_20"] = group["SMA_20"].round(2)
-    group["RSI"] = group["RSI"].round(1)
-    group["MACD"] = group["MACD"].round(2)
-    group["MACD_Signal"] = group["MACD_Signal"].round(2)
-    
-    return group.tail(15)
 
 def seed_clickhouse() -> None:
     """Seeds initial historical price and indicator records into ClickHouse."""
@@ -59,7 +28,8 @@ def seed_clickhouse() -> None:
         })
         
     df_raw = pd.DataFrame(raw_data)
-    df_final = df_raw.groupby("symbol", group_keys=False).apply(calculate_indicators)
+    df_final = tool_calculate_technical_indicators(df_raw)
+    df_final = df_final.groupby("symbol", group_keys=False).tail(15)
     df_final = df_final.sort_values(by=["timestamp", "symbol"]).reset_index(drop=True)
     df_final.columns = df_final.columns.str.lower()
     
