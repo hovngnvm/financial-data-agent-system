@@ -4,10 +4,6 @@ from src.config import settings
 from src.utils.logger import get_logger
 
 COLUMN_MAPPING: dict[str, str] = {
-    'timestamp': 'timestamp',
-    'symbol': 'symbol',
-    'price': 'price',
-    'volume': 'volume',
     'sma_5': 'SMA_5',
     'sma_20': 'SMA_20',
     'rsi': 'RSI',
@@ -43,23 +39,16 @@ class DatabaseManager:
 
     def init_db(self) -> None:
         """Initializes database and tables in ClickHouse using ReplacingMergeTree."""
-        temp_client = None
         try:
-            temp_client = clickhouse_connect.get_client(
+            with clickhouse_connect.get_client(
                 host=self.host,
                 port=self.port,
                 username=self.user,
                 password=self.password
-            )
-            temp_client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+            ) as temp_client:
+                temp_client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
         except Exception as e:
             logger.warning(f"Failed to pre-create database {self.database}: {e}")
-        finally:
-            if temp_client and hasattr(temp_client, "close"):
-                try:
-                    temp_client.close()
-                except Exception as close_err:
-                    logger.debug(f"Error closing temp client: {close_err}")
 
         client = self.client
         client.command("""

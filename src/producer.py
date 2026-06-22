@@ -1,6 +1,5 @@
 import asyncio
 import json
-from collections import deque
 from datetime import datetime
 import websockets
 import feedparser
@@ -110,7 +109,7 @@ async def stream_vnstock_polling(producer: AIOKafkaProducer) -> None:
                     await producer.send_and_wait(TOPIC_MARKET, payload)
                     logger.debug(f"[Vnstock] Streamed live tick for {sym}: {latest_row['price']}")
             await asyncio.sleep(VNSTOCK_POLL_INTERVAL_SECONDS)
-        except (Exception, SystemExit, BaseException) as e:
+        except Exception as e:
             logger.warning(f"[Vnstock] API rate limit or error for {sym}: {e}. Backing off {VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS}s...")
             await asyncio.sleep(VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS)
 
@@ -118,8 +117,7 @@ async def stream_rss_news_feeds(producer: AIOKafkaProducer) -> None:
     """Scrapes financial news stories from macro feeds."""
     logger.info("Starting live listener for financial RSS feeds...")
     
-    seen_guid_set = set()
-    seen_guid_order = deque()
+    seen_guids: dict[str, bool] = {}
     
     while True:
         try:
@@ -127,13 +125,10 @@ async def stream_rss_news_feeds(producer: AIOKafkaProducer) -> None:
                 feed = feedparser.parse(url)
                 for entry in feed.entries[:3]:
                     guid = entry.get('id', entry.get('link', ''))
-                    if guid and guid not in seen_guid_set:
-                        seen_guid_set.add(guid)
-                        seen_guid_order.append(guid)
-                        
-                        if len(seen_guid_order) > MAX_SEEN_NEWS_CACHE:
-                            oldest_guid = seen_guid_order.popleft()
-                            seen_guid_set.discard(oldest_guid)
+                    if guid and guid not in seen_guids:
+                        seen_guids[guid] = True
+                        if len(seen_guids) > MAX_SEEN_NEWS_CACHE:
+                            seen_guids.pop(next(iter(seen_guids)))
                         
                         payload = {
                             "ingest_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),

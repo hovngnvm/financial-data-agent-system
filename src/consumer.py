@@ -99,18 +99,23 @@ class PriceCacheManager:
 
         self._in_memory_cache[symbol].extend(new_records)
         self._in_memory_cache[symbol].sort(key=lambda x: x["timestamp"])
-        
-        seen = set()
-        unique = []
-        for r in self._in_memory_cache[symbol]:
-            if r["timestamp"] not in seen:
-                seen.add(r["timestamp"])
-                unique.append(r)
-                
-        self._in_memory_cache[symbol] = unique[-PRICE_WINDOW_SIZE:]
+        self._in_memory_cache[symbol] = list(
+            {r["timestamp"]: r for r in self._in_memory_cache[symbol]}.values()
+        )[-PRICE_WINDOW_SIZE:]
         return self._in_memory_cache[symbol]
 
 price_cache = PriceCacheManager()
+
+def _route_to_dlq(producer: AIOKafkaProducer, dlq_topic: str, msg: Any, error: Exception):
+    dlq_payload = {
+        "error_message": str(error),
+        "fail_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "original_topic": msg.topic,
+        "partition": msg.partition,
+        "offset": msg.offset,
+        "raw_payload": msg.value.decode('utf-8', errors='replace')
+    }
+    return producer.send_and_wait(dlq_topic, dlq_payload)
 
 async def process_market_batch(messages: list[Any], producer: AIOKafkaProducer) -> None:
     if not messages:
@@ -124,17 +129,12 @@ async def process_market_batch(messages: list[Any], producer: AIOKafkaProducer) 
             if "payload" not in val or "symbol" not in val["payload"] or "price" not in val["payload"] or "volume" not in val["payload"]:
                 raise KeyError("Missing required data fields (symbol/price/volume) in payload.")
                 
-            raw_ts = val.get("ingest_timestamp")
+            raw_ts = val.get("ingest_timestamp", "")
             try:
-                datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S.%f")
-                ts_str = raw_ts
+                dt = datetime.fromisoformat(raw_ts)
+                ts_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")
             except ValueError:
-                try:
-                    dt = datetime.strptime(raw_ts, "%Y-%m-%d %H:%M:%S")
-                    ts_str = dt.strftime("%Y-%m-%d %H:%M:%S.000000")
-                except ValueError:
-                    dt = datetime.now()
-                    ts_str = dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+                ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
             record = {
                 "timestamp": ts_str,
@@ -145,15 +145,7 @@ async def process_market_batch(messages: list[Any], producer: AIOKafkaProducer) 
             records.append(record)
         except Exception as e:
             logger.error(f"Failed to parse market message at offset {msg.offset}: {e}. Routing to DLQ...")
-            dlq_payload = {
-                "error_message": str(e),
-                "fail_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "original_topic": msg.topic,
-                "partition": msg.partition,
-                "offset": msg.offset,
-                "raw_payload": msg.value.decode('utf-8', errors='replace')
-            }
-            dlq_promises.append(producer.send_and_wait(settings.topic_market_dlq, dlq_payload))
+            dlq_promises.append(_route_to_dlq(producer, settings.topic_market_dlq, msg, e))
             
     if dlq_promises:
         await asyncio.gather(*dlq_promises)
@@ -214,15 +206,7 @@ async def process_news_batch(messages: list[Any], producer: AIOKafkaProducer) ->
             records.append(record)
         except Exception as e:
             logger.error(f"Failed to parse news message at offset {msg.offset}: {e}. Routing to DLQ...")
-            dlq_payload = {
-                "error_message": str(e),
-                "fail_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "original_topic": msg.topic,
-                "partition": msg.partition,
-                "offset": msg.offset,
-                "raw_payload": msg.value.decode('utf-8', errors='replace')
-            }
-            dlq_promises.append(producer.send_and_wait(settings.topic_news_dlq, dlq_payload))
+            dlq_promises.append(_route_to_dlq(producer, settings.topic_news_dlq, msg, e))
             
     if dlq_promises:
         await asyncio.gather(*dlq_promises)
@@ -253,58 +237,35 @@ async def process_news_batch(messages: list[Any], producer: AIOKafkaProducer) ->
             logger.error(f"News consumer Qdrant storage failure: {e}")
             raise e
 
-async def run_market_consumer(producer: AIOKafkaProducer) -> None:
+async def _run_consumer_loop(
+    topic: str,
+    group_id: str,
+    max_records: int,
+    batch_handler: Any,
+    producer: AIOKafkaProducer,
+    consumer_name: str
+) -> None:
     consumer = AIOKafkaConsumer(
-        settings.topic_market,
+        topic,
         bootstrap_servers=settings.kafka_broker,
-        group_id="finagent_market_group",
+        group_id=group_id,
         auto_offset_reset="earliest",
         enable_auto_commit=False
     )
     await consumer.start()
-    logger.info("[Market Consumer] Price data consumer started (Manual Commit)...")
+    logger.info(f"[{consumer_name}] Consumer started (Manual Commit)...")
     try:
         while True:
             try:
-                result = await consumer.getmany(timeout_ms=DEFAULT_BATCH_TIMEOUT_MS, max_records=DEFAULT_BATCH_MAX_RECORDS)
+                result = await consumer.getmany(timeout_ms=DEFAULT_BATCH_TIMEOUT_MS, max_records=max_records)
                 if not result:
                     continue
-                    
                 for tp, msgs in result.items():
                     if msgs:
-                        await process_market_batch(msgs, producer)
-                        last_offset = msgs[-1].offset
-                        await consumer.commit({tp: last_offset + 1})
+                        await batch_handler(msgs, producer)
+                        await consumer.commit({tp: msgs[-1].offset + 1})
             except Exception as e:
-                logger.error(f"Error in Market Consumer loop (Commit rejected): {e}")
-                await asyncio.sleep(RETRY_BACKOFF_SECONDS)
-    finally:
-        await consumer.stop()
-
-async def run_news_consumer(producer: AIOKafkaProducer) -> None:
-    consumer = AIOKafkaConsumer(
-        settings.topic_news,
-        bootstrap_servers=settings.kafka_broker,
-        group_id="finagent_news_group",
-        auto_offset_reset="earliest",
-        enable_auto_commit=False
-    )
-    await consumer.start()
-    logger.info("[News Consumer] News consumer started (Manual Commit)...")
-    try:
-        while True:
-            try:
-                result = await consumer.getmany(timeout_ms=DEFAULT_BATCH_TIMEOUT_MS, max_records=10)
-                if not result:
-                    continue
-                    
-                for tp, msgs in result.items():
-                    if msgs:
-                        await process_news_batch(msgs, producer)
-                        last_offset = msgs[-1].offset
-                        await consumer.commit({tp: last_offset + 1})
-            except Exception as e:
-                logger.error(f"Error in News Consumer loop (Commit rejected): {e}")
+                logger.error(f"Error in {consumer_name} loop (Commit rejected): {e}")
                 await asyncio.sleep(RETRY_BACKOFF_SECONDS)
     finally:
         await consumer.stop()
@@ -318,8 +279,12 @@ async def main() -> None:
     await producer.start()
     try:
         await asyncio.gather(
-            run_market_consumer(producer),
-            run_news_consumer(producer)
+            _run_consumer_loop(
+                settings.topic_market, "finagent_market_group", DEFAULT_BATCH_MAX_RECORDS, process_market_batch, producer, "Market Consumer"
+            ),
+            _run_consumer_loop(
+                settings.topic_news, "finagent_news_group", 10, process_news_batch, producer, "News Consumer"
+            )
         )
     finally:
         await producer.stop()
