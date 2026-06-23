@@ -1,8 +1,7 @@
 import time
 import pytest
 from langchain_core.messages import HumanMessage, AIMessage, trim_messages
-from src.agent.router import semantic_router, SemanticVectorRouter
-from src.config import settings
+from src.agent.router import semantic_router
 
 def test_semantic_router_sub_10ms_latency():
     """Verifies that Semantic Vector Router evaluates intents in sub-10ms latency."""

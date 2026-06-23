@@ -1,19 +1,15 @@
 # tests/evaluate.py
-"""
-FinAgent Comprehensive Evaluation Suite:
-1. Layer 1-3 RAG Quality Gate (IR Metrics, Fact Recall, Latency Guard)
-2. Chunking Strategy A/B Benchmark (Table Preservation & Precision)
-3. Token/Chunk Size Sensitivity Benchmark (Hyperparameter Analysis)
-"""
+"""FinAgent RAG Quality-Gate Evaluation Suite."""
 import os
 import sys
 import time
-import argparse
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseIndexParams, PointStruct, Prefetch, FusionQuery, Fusion
@@ -281,105 +277,10 @@ def run_3layer_rag_evaluation():
         print("\nQuality Gate Status: FAILED (Evaluation scores below threshold)")
         return False
 
-# Part 2: Chunking Strategy A/B Benchmark
-def run_chunking_strategy_benchmark():
-    """
-    A/B Tests 3 Chunking Strategies:
-    1. Naive Fixed-Size (500 chars)
-    2. Recursive Character (1000 chars, overlap 150)
-    3. Parent-Child Chunking + Table Guard (1200 / 250 chars)
-    """
-    print("\nPhase 2: Chunking Strategy A/B Benchmark Matrix")
-    print("-" * 60)
-    
-    # Strategy 1: Naive Fixed-Size
-    def naive_fixed_chunker(text: str, size: int = 500) -> list[str]:
-        return [text[i:i + size] for i in range(0, len(text), size)]
-        
-    naive_chunks = naive_fixed_chunker(SAMPLE_FINANCIAL_DOC, 500)
-    # Naive fixed 500 characters splits the 4-row markdown financial table into fragmented lines
-    table_integrity_naive = 33.3
-    
-    # Strategy 2: Recursive Character Chunking
-    def recursive_chunker(text: str, size: int = 1000, overlap: int = 150) -> list[str]:
-        paras = text.split("\n\n")
-        chunks = []
-        cur = []
-        cur_len = 0
-        for p in paras:
-            cur.append(p)
-            cur_len += len(p)
-            if cur_len >= size:
-                chunks.append("\n\n".join(cur))
-                cur = [p[-overlap:]] if len(p) > overlap else []
-                cur_len = len(cur[0]) if cur else 0
-        if cur:
-            chunks.append("\n\n".join(cur))
-        return chunks
-        
-    recursive_chunks = recursive_chunker(SAMPLE_FINANCIAL_DOC, 1000, 150)
-    table_integrity_recursive = 75.0 # Preserves paragraph boundaries but splits long tables
-    
-    # Strategy 3: Parent-Child with Table Guard
-    parent_child_payloads = advanced_parent_child_chunker(SAMPLE_FINANCIAL_DOC, "source_hpg")
-    table_integrity_pc = 100.0 # Dedicated placeholder extraction guarantees zero broken tables
-    
-    print("\nStrategy                       | Chunks Created | Table Integrity | Token Dilution | Recommendation")
-    print("-" * 96)
-    print(f"1. Naive Fixed (500 chars)     | {len(naive_chunks):<14} | {table_integrity_naive:.1f}%          | High (48%)     | Not recommended (Breaks tables)")
-    print(f"2. Recursive (1000 chars)      | {len(recursive_chunks):<14} | {table_integrity_recursive:.1f}%          | Med (32%)      | Acceptable for plain text")
-    print(f"3. Parent-Child (1200/250)     | {len(parent_child_payloads):<14} | {table_integrity_pc:.1f}%         | Low (12%)      | OPTIMAL (Preserves tables & dense search)")
-    print("-" * 96)
-    print("Conclusion: Parent-Child Chunking achieves 100% table preservation and the lowest token dilution.")
-
-# Part 3: Token Window Sensitivity Benchmark
-def run_token_sensitivity_benchmark():
-    """
-    Hyperparameter Sensitivity Benchmark:
-    Compares 3 Size Windows (Micro vs Macro vs Tuned Optimal 1200/250).
-    """
-    print("\nPhase 3: Token / Chunk Size Sensitivity Grid Report")
-    print("-" * 60)
-    
-    configurations = [
-        {"name": "Micro Granular", "child": 100, "parent": 500, "vector_sharpness": "Low (Fragmented words)", "context_adequacy": "64.0%", "token_overhead": "Low"},
-        {"name": "Macro Chunky", "child": 600, "parent": 2500, "vector_sharpness": "Low (Vector smearing)", "context_adequacy": "92.0%", "token_overhead": "High (+240% tokens)"},
-        {"name": "Tuned Optimal (Current)", "child": 250, "parent": 1200, "vector_sharpness": "Peak (Single Proposition)", "context_adequacy": "94.5%", "token_overhead": "Optimal (~1.2k tokens)"}
-    ]
-    
-    print("\nConfiguration            | Child / Parent Size | Vector Search Sharpness  | LLM Context Adequacy | Overall Evaluation")
-    print("-" * 115)
-    for cfg in configurations:
-        size_str = f"{cfg['child']} / {cfg['parent']} chars"
-        print(f"{cfg['name']:<24} | {size_str:<19} | {cfg['vector_sharpness']:<24} | {cfg['context_adequacy']:<20} | {cfg['token_overhead']}")
-    print("-" * 115)
-    print("Mathematical Rationale:")
-    print("1. Child = ~250 chars (~60 tokens): Matches 1-2 complete financial propositions for dense cosine matching.")
-    print("2. Parent = ~1200 chars (~300 tokens): Provides full paragraph and table context for LLM generation without context stuffing.")
-
 # Main Entrypoint
 def main():
-    parser = argparse.ArgumentParser(description="FinAgent Unified Evaluation & Benchmark Suite")
-    parser.add_argument("--all", action="store_true", help="Run all 3 phases of evaluation and benchmark")
-    parser.add_argument("--chunking", action="store_true", help="Run Phase 2: Chunking Strategy Benchmark")
-    parser.add_argument("--sensitivity", action="store_true", help="Run Phase 3: Token Sensitivity Benchmark")
-    args = parser.parse_args()
-    
-    if args.all:
-        passed = run_3layer_rag_evaluation()
-        run_chunking_strategy_benchmark()
-        run_token_sensitivity_benchmark()
-        sys.exit(0 if passed else 1)
-    elif args.chunking:
-        run_chunking_strategy_benchmark()
-        sys.exit(0)
-    elif args.sensitivity:
-        run_token_sensitivity_benchmark()
-        sys.exit(0)
-    else:
-        # Default execution: 3-Layer RAG Quality Gate for CI/CD
-        passed = run_3layer_rag_evaluation()
-        sys.exit(0 if passed else 1)
+    passed = run_3layer_rag_evaluation()
+    sys.exit(0 if passed else 1)
 
 if __name__ == "__main__":
     main()
