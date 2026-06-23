@@ -1,6 +1,6 @@
 import pytest
 from src.agent.nodes.driver import MultiIntentRoutePlan
-from src.agent.nodes.security import SecurityCheckResult, SQL_INJECTION_REGEX, PROMPT_INJECTION_REGEX
+from src.agent.nodes.security import SQL_INJECTION_REGEX, PROMPT_INJECTION_REGEX
 
 def test_multi_intent_route_plan_defaults():
     output = MultiIntentRoutePlan()
@@ -13,10 +13,6 @@ def test_multi_intent_route_plan_parsing():
     assert output.target == "HPG"
     assert output.activated_intents == ["FETCH_PRICE", "FETCH_NEWS"]
     assert output.chart_mode == "rsi"
-
-def test_security_check_result_schema():
-    result = SecurityCheckResult(status="MALICIOUS")
-    assert result.status == "MALICIOUS"
 
 @pytest.mark.parametrize("malicious_query", [
     "SELECT * FROM users; DROP TABLE prices; --",

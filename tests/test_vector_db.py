@@ -17,7 +17,7 @@ def test_vector_db_manager_sparse_vector(mocker):
     sparse1 = vdb_mgr.text_to_sparse_vector("HPG")
     sparse2 = vdb_mgr.text_to_sparse_vector("HPG")
     
-    # Verify deterministic MurmurHash3 output
+    # Verify deterministic zlib.crc32 output
     assert sparse1 == sparse2
     assert "indices" in sparse1
     assert "values" in sparse1
@@ -28,8 +28,8 @@ def test_vector_db_manager_sparse_vector_collision_deduplication(mocker):
     mocker.patch("src.vector_db.QdrantClient")
     vdb_mgr = VectorDBManager()
     
-    # Mock mmh3.hash to return identical index to verify weight aggregation
-    mocker.patch("mmh3.hash", return_value=42)
+    # Mock zlib.crc32 to return identical index to verify weight aggregation
+    mocker.patch("zlib.crc32", return_value=42)
     sparse = vdb_mgr.text_to_sparse_vector("apple orange banana")
     
     # All 3 words map to bucket 42; their weights should be summed (3.0) without duplicate indices

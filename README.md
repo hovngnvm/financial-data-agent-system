@@ -110,11 +110,11 @@ The coordination network uses a hybrid routing strategy combining a **sub-3ms Se
 
 | Detected Intent | Sample User Query | Routing Mechanism | Target Worker Node | Underlying Tool / Data Source |
 | :--- | :--- | :--- | :--- | :--- |
-| `INTENT_SQL` | *"What is the latest price and RSI for HPG?"* | Fast-Path Vector Embedding Similarity (`score > 0.82`) | **SQL Worker** | ClickHouse Semantic Layer (`get_ticker_price`, `get_indicators`) |
-| `INTENT_CHART` | *"Draw a technical chart with MACD and SMA for SSI"* | Fast-Path Vector Embedding Similarity (`score > 0.80`) | **Chart Worker** | Headless Matplotlib Renderer (`generate_technical_chart`) |
-| `INTENT_RAG` | *"Summarize recent news regarding State Bank of Vietnam interest rates"* | Fast-Path Vector Embedding Similarity (`score > 0.78`) | **RAG Worker** | Qdrant Dense+Sparse Hybrid Index + BGE Reranker |
-| `INTENT_COMPLEX` | *"Analyze FPT stock price, show chart, and evaluate recent AI cloud expansion news"* | Clause Splitting + Multi-Threshold Fast-Path | **Dynamic Fan-out** (SQL + Chart + RAG concurrently $\rightarrow$ Analyst) | Parallel execution across ClickHouse, Matplotlib, and Qdrant |
-| `AMBIGUOUS` | *"What should I do with my portfolio today?"* | LLM Reasoning Fallback (`qwen2.5-coder:1.5b`) | **Analyst Worker** | Direct dialogue synthesis with Redis chat checkpointer |
+| `FETCH_PRICE` / `FETCH_INDICATOR` | *"What is the latest price and RSI for HPG?"* | Fast-Path Vector Embedding Similarity (`score >= 0.55`) | **SQL Worker** | ClickHouse Semantic Layer (`tool_get_ticker_prices`, `tool_get_ticker_indicators`) |
+| `RENDER_CHART` | *"Draw a technical chart with MACD and SMA for SSI"* | Fast-Path Vector Embedding Similarity (`score >= 0.55`) | **Chart Worker** | Headless Matplotlib Renderer (`tool_generate_market_chart`) |
+| `FETCH_NEWS` | *"Summarize recent news regarding State Bank of Vietnam interest rates"* | Fast-Path Vector Embedding Similarity (`score >= 0.55`) | **RAG Worker** | Qdrant Dense+Sparse Hybrid Index + BGE Reranker |
+| `MULTI_INTENT` | *"Analyze FPT stock price, show chart, and evaluate recent AI cloud expansion news"* | Clause Splitting + Fast-Path Centroid Similarity | **Dynamic Fan-out** (SQL + Chart + RAG concurrently $\rightarrow$ Analyst) | Parallel execution across ClickHouse, Matplotlib, and Qdrant |
+| `CHITCHAT` / `AMBIGUOUS` | *"Xin chào bạn, hôm nay thời tiết thế nào?"* | Fast-Path Centroid or LLM Reasoning Fallback (`qwen2.5-coder:1.5b`) | **Analyst Worker** | Direct dialogue synthesis with Redis chat checkpointer |
 
 ---
 
@@ -135,7 +135,7 @@ flowchart TD
 
     child --> batch_enc["Vectorized Batch Encoder<br/>(sentence-transformers, batch_size=32)"]
     batch_enc --> dense_vec["Dense Embeddings<br/>(384-dim HNSW Cosine)"]
-    batch_enc --> sparse_vec["Sparse Tokens<br/>(MurmurHash3 mmh3 Index)"]
+    batch_enc --> sparse_vec["Sparse Tokens<br/>(CRC32 zlib Index)"]
 
     dense_vec --> qdrant_store[("Qdrant On-Disk Storage")]
     sparse_vec --> qdrant_store
@@ -183,13 +183,14 @@ The `ChartAgent` module renders multi-panel financial charts via thread-safe, ob
 
 ### 3. Semantic Layer Ingestion (Vector Database)
 * **Hierarchical Chunking:** Processes ingested news articles into child chunks for precision embeddings while preserving the broader parent document context to avoid context fragmentation.
-* **Batch Vector Encoding & Hybrid Indexing:** Encodes document chunks in vectorized batches (`batch_size=32`) via `sentence-transformers`, generating dense embeddings alongside sparse vectors built via MurmurHash3 (`mmh3`) with collision weight aggregation. Stores both dense and sparse indices directly on disk in Qdrant.
+* **Batch Vector Encoding & Hybrid Indexing:** Encodes document chunks in vectorized batches (`batch_size=32`) via `sentence-transformers`, generating dense embeddings alongside sparse vectors built via `zlib.crc32` with collision weight aggregation. Stores both dense and sparse indices directly on disk in Qdrant.
+* **Shared Embedding Singleton:** Shares the loaded `SentenceTransformer` instance between Qdrant vector retrieval and the Semantic Vector Router, cutting ~120MB of duplicate model RAM.
 
 ### 4. LangGraph Multi-Agent Orchestration
 * **Security Agent:** Intercepts incoming Telegram inputs to guard against SQL injections, prompt manipulation, or jailbreaks using multi-vector regex inspection and `llama-guard3:1b`.
 * **Supervisor Agent & Fast Semantic Router:** Evaluates intent via a sub-3ms `SemanticVectorRouter` with Multi-Threshold matching and Clause Splitting. Falls back to structured LLM reasoning (`qwen2.5-coder:1.5b`) on ambiguous input.
 * **Dynamic Conditional Fan-out:** Branches execution concurrently to relevant workers (SQL Agent, RAG Agent, Chart Agent, or direct to Analyst), eliminating unnecessary sequential steps.
-* **SQL Agent:** Extracts parameters (action, ticker, limit) from user questions to query prices and technical indicators via ClickHouse Semantic Layer tools with exact case-insensitive symbol normalization (`upper(symbol) = upper(%(symbol)s)`).
+* **SQL Agent:** Directly queries prices and technical indicators via ClickHouse Semantic Layer tools using intents and targets pre-classified by the Supervisor, eliminating redundant LLM latency.
 * **RAG Agent:** Executes hybrid dense/sparse searches against Qdrant, reranks text candidates using a cross-encoder model (`bge-reranker-v2-m3`), and fetches the expanded parent document context.
 * **Chart Agent:** Dynamically generates multi-panel technical analysis charts using object-oriented, thread-safe headless Matplotlib with custom session-isolated output paths.
 * **Analyst Agent & In-Flight Context Trimming:** Synthesizes final reports combining quantitative ClickHouse metrics and Qdrant macro context. Applies `trim_messages` to constrain chat history within an 800-token budget while preserving the complete conversation snapshot in RedisSaver. Supports runtime switching between Local Ollama (`qwen2.5:1.5b-instruct`) and Cloud AI (OpenAI, Gemini, DeepSeek, Groq).
@@ -202,9 +203,9 @@ The `ChartAgent` module renders multi-panel financial charts via thread-safe, ob
 * **Deterministic Parameterized SQL Matching:** Eliminates SQL dialect syntax issues and injection risks by enforcing parameter-driven execution with strict case-insensitive symbol matching and subquery chronological ordering.
 * **Multi-Vector Security Guardrails:** Combines rule-based regex patterns for SQL injection (`UNION SELECT`, `INSERT INTO`) and prompt jailbreaks (`disregard rules`, `act as DAN`) with Llama-Guard fail-safe verification.
 * **Multi-Provider LLM Switcher:** Users can toggle between Local Ollama and Cloud AI providers dynamically via Telegram UI buttons (`/model`) or environment configurations.
-* **3-Layer RAG Quality Gate & Chunking Benchmark:** Automated evaluation testing IR metrics (Hit@1, Hit@2, MRR), fact recall, and table preservation integrity.
+* **3-Layer RAG Quality Gate:** Automated evaluation testing IR metrics (Hit@1, Hit@2, MRR), fact recall, and latency guards.
 * **High-Throughput Batch Vectorization:** Replaces per-item encoding with batched tensor calculations (`batch_size=32`), achieving 5x–10x faster vector database ingestion.
-* **Zero-Leak Stream Buffers:** Protects continuous 24/7 RSS ingestion using bounded sliding deques to prevent memory leaks.
+* **Zero-Leak Stream Buffers:** Protects continuous 24/7 RSS ingestion using a bounded sliding FIFO dictionary to prevent memory leaks.
 * **Resilient Offset Commit Policy:** Commits Kafka offsets manually *after* data persistence succeeds, assuring zero data loss (At-Least-Once).
 * **Robust DLQ Design:** Isolates malformed events into dedicated DLQ topics to prevent ingestion pipeline blocking.
 * **ClickHouse Query Offloading:** Integrates a write-through hybrid cache (Redis ZSET / In-memory fallback) to eliminate database queries inside the streaming loop.
@@ -249,7 +250,7 @@ financial-data-agent-system/
 │   └── vector_db.py                   # Qdrant hybrid (dense + sparse index HNSW) schema & ingest
 │
 ├── tests/                             # Full Unit & Evaluation Test Suite
-│   ├── evaluate.py                    # Unified 3-Layer RAG Quality Gate & Chunking Benchmark Suite
+│   ├── evaluate.py                    # 3-Layer RAG Quality Gate Evaluation Suite
 │   ├── seed_data.py                   # Test dataset initialization fixtures
 │   ├── test_chunking.py               # Markdown table and hierarchical chunking tests
 │   ├── test_consumer.py               # Ingestion stream, DLQ, and cache manager tests
@@ -301,7 +302,7 @@ Stores dense embeddings, sparse tokens, and hierarchical parent-child article pa
 | Vector / Payload Field | Type / Dimension | Indexing Strategy | Description |
 | :--- | :--- | :--- | :--- |
 | `dense` | `Vector(384)` | HNSW (Cosine Distance) | Dense semantic vector (`all-MiniLM-L6-v2`) |
-| `sparse` | `SparseVector` | Inverted Index (On-Disk) | Lexical token weights generated via MurmurHash3 (`mmh3`) |
+| `sparse` | `SparseVector` | Inverted Index (On-Disk) | Lexical token weights generated via `zlib.crc32` |
 | `parent_id` | `String (MD5/UUID)` | Keyword Match | Unique identifier linking child chunks to parent document |
 | `chunk_id` | `String / Integer` | Keyword Match | Child chunk sequence index within parent article |
 | `source` | `String` | Keyword Filter | News publisher (e.g., `CafeF`, `Vietstock`, `VnExpress`) |
@@ -403,8 +404,8 @@ pip install -r requirements.txt
 # Run full pytest unit and integration test suite across all components
 PYTHONPATH=. pytest -v
 
-# Run the 3-Layer RAG Quality Gate and Chunking Strategy Benchmark Suite
-PYTHONPATH=. python tests/evaluate.py --all
+# Run the 3-Layer RAG Quality Gate Evaluation Suite
+PYTHONPATH=. python tests/evaluate.py
 ```
 
 ### 4. Run the Stream Pipeline (Optional Standalone)
@@ -432,12 +433,14 @@ Search for your bot in Telegram using your configured bot token name and interac
 * `/analyze HPG` - Triggers comprehensive technical analysis with automated chart generation for ticker `HPG`.
 
 #### Sample Natural Language Queries:
-* **Quantitative Data Lookup (`INTENT_SQL`):**
+* **Quantitative Data Lookup (`FETCH_PRICE` / `FETCH_INDICATOR`):**
   > *"Lấy giá mới nhất và chỉ số RSI của SSI"*
-* **Dynamic Technical Charting (`INTENT_CHART`):**
+* **Dynamic Technical Charting (`RENDER_CHART`):**
   > *"Vẽ biểu đồ kỹ thuật MACD và đường SMA cho SSI"*
-* **Macroeconomic News Synthesis (`INTENT_RAG`):**
+* **Macroeconomic News Synthesis (`FETCH_NEWS`):**
   > *"Tóm tắt các tin tức mới nhất về chính sách điều hành lãi suất của Ngân hàng Nhà nước"*
-* **Complex Multi-Intent Analysis (`INTENT_COMPLEX`):**
+* **Complex Multi-Intent Analysis (Multi-Intent Fan-out):**
   > *"Phân tích kỹ thuật mã FPT, vẽ biểu đồ và đánh giá các tin tức mở rộng trung tâm dữ liệu AI gần đây"*
+* **Conversational Interaction (`CHITCHAT`):**
+  > *"Xin chào bạn, hôm nay thời tiết thế nào?"*
 

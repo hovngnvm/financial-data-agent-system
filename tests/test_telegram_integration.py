@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from telegram.ext import Application
 from src.telegram_bot import post_init, _send_and_cleanup_chart
@@ -42,7 +41,6 @@ async def test_chart_file_path_preserved_through_state_purger():
         "chart_file_path": "data/exports/session_chart.png",
         "activated_intents": ["RENDER_CHART"],
         "chart_mode": "candlestick",
-        "error_log": "",
         "retry_count": 0,
         "next_worker": "PURGE"
     }
