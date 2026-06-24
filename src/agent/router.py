@@ -1,3 +1,4 @@
+import functools
 import re
 from typing import Any
 import numpy as np
@@ -52,8 +53,8 @@ INTENT_UTTERANCES: dict[str, list[str]] = {
     ]
 }
 
-SECONDARY_INTENT_DELTA: float = 0.06
-ROUTER_FALLBACK_MARGIN: float = 0.10
+SECONDARY_INTENT_DELTA: float = settings.router_secondary_delta
+ROUTER_FALLBACK_MARGIN: float = settings.router_fallback_margin
 
 class SemanticVectorRouter:
     """
@@ -62,19 +63,25 @@ class SemanticVectorRouter:
     with Multi-Threshold support and Clause Splitting for compound queries.
     """
     def __init__(self, model: Any | None = None):
-        self.model = model or vector_db_manager.get_embedding_model()
-        self.intent_centroids: dict[str, np.ndarray] = {}
-        self._precompute_centroids()
+        if model is not None:
+            self.__dict__["model"] = model
 
-    def _precompute_centroids(self) -> None:
+    @functools.cached_property
+    def model(self):
+        return vector_db_manager.get_embedding_model()
+
+    @functools.cached_property
+    def intent_centroids(self) -> dict[str, np.ndarray]:
         """Precomputes and normalizes unit vector centroids for all canonical intent clusters."""
+        centroids = {}
         for intent_name, utterances in INTENT_UTTERANCES.items():
             embeddings = self.model.encode(utterances, convert_to_numpy=True, normalize_embeddings=True)
             centroid = np.mean(embeddings, axis=0)
             norm = np.linalg.norm(centroid)
             if norm > 0:
                 centroid = centroid / norm
-            self.intent_centroids[intent_name] = centroid
+            centroids[intent_name] = centroid
+        return centroids
 
     def extract_ticker(self, text: str) -> str:
         """Extracts and normalizes the target ticker symbol from input text."""
@@ -149,6 +156,10 @@ class SemanticVectorRouter:
 
         if has_chart and not any(i in detected_intents for i in ["FETCH_PRICE", "FETCH_INDICATOR"]):
             detected_intents.add("FETCH_INDICATOR" if chart_mode in ["rsi", "macd", "price_sma"] else "FETCH_PRICE")
+
+        # Fallback to LLM if asset data is requested but ticker is unrecognized
+        if detected_intents & {"FETCH_PRICE", "FETCH_INDICATOR", "RENDER_CHART"} and target_ticker == "UNKNOWN":
+            return None
 
         activated_list = sorted(list(detected_intents))
 

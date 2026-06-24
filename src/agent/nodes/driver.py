@@ -1,8 +1,8 @@
 import functools
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from langchain_ollama import ChatOllama
-from src.agent.state import AgentState
+from src.agent.state import AgentState, ChartMode, Intent
 from src.config import settings
 from src.agent.prompts import SUPERVISOR_MULTI_INTENT_ROUTER_PROMPT
 from src.agent.router import semantic_router
@@ -13,14 +13,27 @@ logger = get_logger(__name__)
 
 class MultiIntentRoutePlan(BaseModel):
     target: str = Field(default="UNKNOWN", description="Target asset ticker in uppercase (e.g. HPG, BTC, ETH)")
-    activated_intents: list[str] = Field(
-        default=["CHITCHAT"],
+    activated_intents: list[Intent] = Field(
+        default_factory=lambda: ["CHITCHAT"],
         description="List of activated intents: FETCH_PRICE, FETCH_INDICATOR, FETCH_NEWS, RENDER_CHART, CHITCHAT"
     )
-    chart_mode: str | None = Field(
+    chart_mode: ChartMode | None = Field(
         default=None,
         description="Chart mode: comprehensive, price_sma, rsi, macd, volume"
     )
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def normalize_target(cls, value: Any) -> str:
+        return str(value or "UNKNOWN").upper().strip()
+
+    @model_validator(mode="after")
+    def validate_intent_combination(self):
+        if "CHITCHAT" in self.activated_intents and len(self.activated_intents) > 1:
+            raise ValueError("CHITCHAT cannot be combined with tool intents")
+        if "RENDER_CHART" in self.activated_intents and self.chart_mode is None:
+            self.chart_mode = "comprehensive"
+        return self
 
 @functools.cache
 def get_driver_llm():
@@ -67,11 +80,11 @@ async def node_driver(state: AgentState) -> dict[str, Any]:
             "next_worker": "FINAL_ANALYST" if is_chitchat else "PARALLEL_EXECUTE"
         }
     except Exception as e:
-        logger.warning(f"Supervisor LLM parsing failed: {e}. Defaulting to CHITCHAT.")
+        logger.error(f"Supervisor routing failed: {e}")
         return {
             "current_target": "UNKNOWN",
-            "activated_intents": ["CHITCHAT"],
+            "activated_intents": [],
             "chart_mode": None,
-            "chat": True,
+            "chat": False,
             "next_worker": "FINAL_ANALYST"
         }
