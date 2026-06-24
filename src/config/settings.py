@@ -57,10 +57,25 @@ class Settings(BaseSettings):
 
     # Semantic Router & Token Budget Settings
     max_history_tokens: int = Field(800, alias="MAX_HISTORY_TOKENS")
+    max_history_messages: int = Field(20, alias="MAX_HISTORY_MESSAGES")
     semantic_router_threshold: float = Field(0.55, alias="SEMANTIC_ROUTER_THRESHOLD")
 
     # Vnstock Market Data Settings
     vnstock_api_key: str = Field("", alias="VNSTOCK_API_KEY")
+    tracked_stock_symbols: list[str] = Field(
+        default=["HPG", "FPT", "SSI", "VND", "MBB", "TCB"], alias="TRACKED_STOCK_SYMBOLS"
+    )
+
+    # API Provider Base URLs
+    deepseek_base_url: str = Field("https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
+    groq_base_url: str = Field("https://api.groq.com/openai/v1", alias="GROQ_BASE_URL")
+
+    # Guardrail & Query Thresholds
+    max_input_length: int = Field(1000, alias="MAX_INPUT_LENGTH")
+    default_prices_limit: int = Field(30, alias="DEFAULT_PRICES_LIMIT")
+    table_prices: str = Field("prices", alias="TABLE_PRICES")
+    router_secondary_delta: float = Field(0.06, alias="ROUTER_SECONDARY_DELTA")
+    router_fallback_margin: float = Field(0.10, alias="ROUTER_FALLBACK_MARGIN")
 
     # File Paths
     chart_file_path: str = str(PROJECT_ROOT / "data" / "exports" / "market_chart.png")
