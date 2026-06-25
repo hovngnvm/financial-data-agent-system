@@ -1,9 +1,8 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any
-from langchain_core.messages import ToolMessage
-from src.agent.state import AgentState
+from typing import Any, get_args
+from src.agent.state import AgentState, ChartMode
 from src.agent.router import semantic_router
 from src.tools import tool_generate_market_chart
 from src.config import settings
@@ -11,7 +10,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-VALID_CHART_MODES: set[str] = {"comprehensive", "price_sma", "rsi", "macd", "volume"}
+VALID_CHART_MODES: set[str] = set(get_args(ChartMode))
 
 async def node_chart_worker(state: AgentState) -> dict[str, Any]:
     """
@@ -37,12 +36,14 @@ async def node_chart_worker(state: AgentState) -> dict[str, Any]:
         tool_generate_market_chart,
         ticker=ticker,
         chart_type=chart_type,
-        output_path=output_chart_file
+        output_path=output_chart_file,
+        prefetched_data=state.get("sql_data_output")
     )
     
+    success = "successfully" in chart_result
     return {
         "chart_status_msg": f"Rendered {chart_type} chart: {chart_result}",
-        "chart_file_path": output_chart_file if "successfully" in chart_result else None,
-        "next_worker": "FINAL_ANALYST",
-        "messages": [ToolMessage(content=chart_result, name="chart_generator", tool_call_id="chart_generator_call")]
+        "chart_data_status": "ok" if success else "error",
+        "chart_file_path": output_chart_file if success else None,
+        "next_worker": "FINAL_ANALYST"
     }
