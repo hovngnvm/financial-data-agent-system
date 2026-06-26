@@ -1,5 +1,6 @@
 import uuid
 import zlib
+from typing import Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, SparseVectorParams, SparseIndexParams, PointStruct
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -15,19 +16,21 @@ logger = get_logger(__name__)
 class VectorDBManager:
     """Manages Qdrant vector database operations, hybrid dense-sparse indexing, and batch ingestion."""
 
-    def __init__(self):
-        self.client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
+    def __init__(self) -> None:
+        self.client = QdrantClient(
+            host=settings.qdrant_host, port=settings.qdrant_port, check_compatibility=False
+        )
         self.collection_name = settings.qdrant_collection
-        self._embedding_model = None
-        self._reranking_model = None
+        self._embedding_model: SentenceTransformer | None = None
+        self._reranking_model: CrossEncoder | None = None
 
-    def get_embedding_model(self):
+    def get_embedding_model(self) -> SentenceTransformer:
         """Lazy-loaded dense embedding model."""
         if self._embedding_model is None:
             self._embedding_model = SentenceTransformer(settings.embedding_model_name)
         return self._embedding_model
 
-    def get_reranking_model(self):
+    def get_reranking_model(self) -> CrossEncoder:
         """Lazy-loaded cross-encoder reranking model."""
         if self._reranking_model is None:
             self._reranking_model = CrossEncoder(settings.rerank_model_name)

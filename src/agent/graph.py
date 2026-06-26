@@ -1,6 +1,7 @@
 import socket
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
 from src.config import settings
 from src.utils.logger import get_logger
@@ -36,7 +37,7 @@ workflow.set_entry_point("security_shield")
 workflow.add_conditional_edges(
     "security_shield",
     lambda state: "blocked" if state["next_worker"] == "FINISH" else "pass",
-    {"blocked": "final_analyst", "pass": "driver"}
+    {"blocked": "state_purger", "pass": "driver"}
 )
 
 def supervisor_fork_router(state: AgentState) -> list[str]:
@@ -67,15 +68,7 @@ workflow.add_conditional_edges(
     }
 )
 
-# Self-Correction Loop for SQL Worker
-workflow.add_conditional_edges(
-    "sql_worker",
-    lambda state: "self_correction" if state["next_worker"] == "SQL_RETRY" else "to_barrier",
-    {
-        "self_correction": "sql_worker",
-        "to_barrier": "join_barrier"
-    }
-)
+workflow.add_edge("sql_worker", "join_barrier")
 
 # Route RAG worker directly to the join barrier after completion
 workflow.add_edge("rag_worker", "join_barrier")
@@ -104,13 +97,11 @@ def get_checkpointer():
     otherwise safely falls back to in-memory MemorySaver.
     """
     try:
-        # Test if Redis port is open and reachable
         with socket.create_connection((settings.redis_host, settings.redis_port), timeout=1.0):
             pass
             
-        from langgraph.checkpoint.redis.aio import AsyncRedisSaver
         redis_url = f"redis://{settings.redis_host}:{settings.redis_port}"
-        saver = AsyncRedisSaver.from_conn_string(redis_url)
+        saver = AsyncRedisSaver(redis_url=redis_url)
         logger.info(f"Connected to Redis checkpointer at {settings.redis_host}:{settings.redis_port}")
         return saver
     except Exception as e:
