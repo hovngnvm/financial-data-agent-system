@@ -24,9 +24,9 @@ CHILD_CHUNK_SIZE: int = 250
 logger = get_logger(__name__)
 
 class PriceCacheManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.redis = Redis(host=settings.redis_host, port=settings.redis_port)
-        self._in_memory_cache = {}
+        self._in_memory_cache: dict[str, list[dict[str, Any]]] = {}
         self.use_redis = True
         self._pinged = False
 
@@ -35,26 +35,26 @@ class PriceCacheManager:
             try:
                 await asyncio.wait_for(self.redis.ping(), timeout=1.0)
                 self.use_redis = True
-                logger.info("[Price Cache] Successfully connected to Redis. Using Redis Sorted Sets for caching.")
+                logger.info("Successfully connected to Redis. Using Redis Sorted Sets for caching.")
             except Exception as e:
                 self.use_redis = False
-                logger.warning(f"[Price Cache] Redis connection failed ({e}). Falling back to in-memory caching.")
+                logger.warning(f"Redis connection failed ({e}). Falling back to in-memory caching.")
             self._pinged = True
 
-    async def _load_from_clickhouse(self, symbol: str) -> list[dict]:
-        logger.debug(f"[Price Cache] Cache miss for symbol {symbol}. Warming up from ClickHouse...")
+    async def _load_from_clickhouse(self, symbol: str) -> list[dict[str, Any]]:
+        logger.debug(f"Cache miss for symbol {symbol}. Warming up from ClickHouse...")
         loop = asyncio.get_running_loop()
         history_df = await loop.run_in_executor(
             None,
             lambda: db_manager.client.query_df(
-                "SELECT timestamp, symbol, price, volume FROM prices WHERE symbol = %(symbol)s ORDER BY timestamp DESC LIMIT %(limit)s",
+                f"SELECT timestamp, symbol, price, volume FROM {settings.table_prices} WHERE symbol = %(symbol)s ORDER BY timestamp DESC LIMIT %(limit)s",
                 parameters={"symbol": symbol, "limit": PRICE_WINDOW_SIZE}
             )
         )
         if history_df.empty:
             return []
         history_df = history_df.iloc[::-1].reset_index(drop=True)
-        records = []
+        records: list[dict[str, Any]] = []
         for _, row in history_df.iterrows():
             ts_str = row['timestamp'].strftime("%Y-%m-%d %H:%M:%S.%f") if isinstance(row['timestamp'], datetime) else str(row['timestamp'])
             records.append({
@@ -65,7 +65,7 @@ class PriceCacheManager:
             })
         return records
 
-    async def get_and_update_window(self, symbol: str, new_records: list[dict]) -> list[dict]:
+    async def get_and_update_window(self, symbol: str, new_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Gets sliding window of prices for a symbol, updates it with new records,
         trims to PRICE_WINDOW_SIZE, and returns the full window.
@@ -90,7 +90,7 @@ class PriceCacheManager:
                 cached_raw = await self.redis.zrange(f"prices:window:{symbol}", 0, -1)
                 return [json.loads(x.decode('utf-8')) for x in cached_raw]
             except Exception as e:
-                logger.warning(f"[Price Cache] Redis error: {e}. Falling back to in-memory caching.")
+                logger.warning(f"Redis error: {e}. Falling back to in-memory caching.")
                 self.use_redis = False
 
         if symbol not in self._in_memory_cache:
@@ -106,7 +106,7 @@ class PriceCacheManager:
 
 price_cache = PriceCacheManager()
 
-def _route_to_dlq(producer: AIOKafkaProducer, dlq_topic: str, msg: Any, error: Exception):
+def _route_to_dlq(producer: AIOKafkaProducer, dlq_topic: str, msg: Any, error: Exception) -> Any:
     dlq_payload = {
         "error_message": str(error),
         "fail_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
@@ -177,13 +177,13 @@ async def process_market_batch(messages: list[Any], producer: AIOKafkaProducer) 
             final_df = pd.concat(enriched_records, ignore_index=True)
             db_manager.ingest_df(
                 dataframe=final_df, 
-                table_name="prices", 
+                table_name=settings.table_prices, 
                 mode="append"
             )
             logger.info(f"Enriched and stored {len(final_df)} records to ClickHouse.")
     except Exception as e:
         logger.error(f"Market consumer enrichment processing failed: {e}")
-        raise e
+        raise
 
 async def process_news_batch(messages: list[Any], producer: AIOKafkaProducer) -> None:
     if not messages:
@@ -235,7 +235,7 @@ async def process_news_batch(messages: list[Any], producer: AIOKafkaProducer) ->
             logger.info(f"Chunked and stored {len(all_structured_chunks)} news blocks to Qdrant.")
         except Exception as e:
             logger.error(f"News consumer Qdrant storage failure: {e}")
-            raise e
+            raise
 
 async def _run_consumer_loop(
     topic: str,
@@ -271,7 +271,7 @@ async def _run_consumer_loop(
         await consumer.stop()
 
 async def main() -> None:
-    logger.info("[Consumer Pipeline] Starting consumer pipeline...")
+    logger.info("Starting consumer pipeline...")
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.kafka_broker,
         value_serializer=lambda v: json.dumps(v).encode('utf-8')

@@ -1,3 +1,4 @@
+from typing import Any
 import pandas as pd
 import clickhouse_connect
 from src.config import settings
@@ -16,16 +17,16 @@ logger = get_logger(__name__)
 class DatabaseManager:
     """Manages ClickHouse database connections, table migrations, and bulk DataFrame ingestion."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.host = settings.db_host
         self.port = settings.db_port
         self.user = settings.db_user
         self.password = settings.db_password
         self.database = settings.db_name
-        self._client = None
+        self._client: Any = None
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """Lazy-loaded ClickHouse Connect Client."""
         if self._client is None:
             self._client = clickhouse_connect.get_client(

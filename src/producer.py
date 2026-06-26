@@ -13,17 +13,12 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-KAFKA_BROKER: str = settings.kafka_broker
-TOPIC_MARKET: str = settings.topic_market
-TOPIC_NEWS: str = settings.topic_news
-
 MAX_SEEN_NEWS_CACHE: int = 5000
 VNSTOCK_POLL_INTERVAL_SECONDS: int = 4
 VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS: int = 30
 RSS_POLL_INTERVAL_SECONDS: int = 15
 RETRY_BACKOFF_SECONDS: int = 5
 
-TRACKED_STOCK_SYMBOLS: list[str] = ["HPG", "FPT", "SSI", "VND", "MBB", "TCB"]
 BINANCE_STREAMS: str = "btcusdt@trade/ethusdt@trade"
 BINANCE_WS_URL: str = f"wss://stream.binance.com:9443/stream?streams={BINANCE_STREAMS}"
 
@@ -38,7 +33,7 @@ FINANCIAL_RSS_FEEDS: list[str] = [
 async def get_producer() -> AIOKafkaProducer:
     """Initializes and connects an asynchronous Kafka Producer."""
     producer = AIOKafkaProducer(
-        bootstrap_servers=KAFKA_BROKER,
+        bootstrap_servers=settings.kafka_broker,
         value_serializer=lambda v: json.dumps(v).encode('utf-8')
     )
     await producer.start()
@@ -66,7 +61,7 @@ async def stream_binance_websocket(producer: AIOKafkaProducer) -> None:
                             "volume": float(trade_data['q'])
                         }
                     }
-                    await producer.send_and_wait(TOPIC_MARKET, payload)
+                    await producer.send_and_wait(settings.topic_market, payload)
                     
         except websockets.exceptions.ConnectionClosed:
             logger.warning("Binance WS connection lost. Reconnecting in %ss...", RETRY_BACKOFF_SECONDS)
@@ -86,31 +81,31 @@ async def stream_vnstock_polling(producer: AIOKafkaProducer) -> None:
         except Exception as e:
             logger.debug(f"Vnstock setup_api_key skipped: {e}")
     
+    tracked_symbols = settings.tracked_stock_symbols
     sym_idx = 0
     while True:
-        sym = TRACKED_STOCK_SYMBOLS[sym_idx % len(TRACKED_STOCK_SYMBOLS)]
+        sym = tracked_symbols[sym_idx % len(tracked_symbols)]
         sym_idx += 1
         try:
-            if Quote is not None:
-                q = Quote(symbol=sym, source='kbs')
-                df = q.intraday()
-                if df is not None and not df.empty:
-                    latest_row = df.iloc[0]
-                    payload = {
-                        "ingest_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-                        "data_source": "vnstock_kbs_intraday",
-                        "asset_class": "STOCK",
-                        "payload": {
-                            "symbol": sym,
-                            "price": float(latest_row['price']),
-                            "volume": float(latest_row['volume'])
-                        }
+            q = Quote(symbol=sym, source='kbs')
+            df = q.intraday()
+            if df is not None and not df.empty:
+                latest_row = df.iloc[0]
+                payload = {
+                    "ingest_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "data_source": "vnstock_kbs_intraday",
+                    "asset_class": "STOCK",
+                    "payload": {
+                        "symbol": sym,
+                        "price": float(latest_row['price']),
+                        "volume": float(latest_row['volume'])
                     }
-                    await producer.send_and_wait(TOPIC_MARKET, payload)
-                    logger.debug(f"[Vnstock] Streamed live tick for {sym}: {latest_row['price']}")
+                }
+                await producer.send_and_wait(settings.topic_market, payload)
+                logger.debug(f"Streamed live tick for {sym}: {latest_row['price']}")
             await asyncio.sleep(VNSTOCK_POLL_INTERVAL_SECONDS)
         except Exception as e:
-            logger.warning(f"[Vnstock] API rate limit or error for {sym}: {e}. Backing off {VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS}s...")
+            logger.warning(f"API rate limit or error for {sym}: {e}. Backing off {VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS}s...")
             await asyncio.sleep(VNSTOCK_RATE_LIMIT_BACKOFF_SECONDS)
 
 async def stream_rss_news_feeds(producer: AIOKafkaProducer) -> None:
@@ -140,7 +135,7 @@ async def stream_rss_news_feeds(producer: AIOKafkaProducer) -> None:
                                 "published": entry.get('published', datetime.now().strftime("%Y-%m-%d"))
                             }
                         }
-                        await producer.send_and_wait(TOPIC_NEWS, payload)
+                        await producer.send_and_wait(settings.topic_news, payload)
             await asyncio.sleep(RSS_POLL_INTERVAL_SECONDS)
         except Exception as e:
             logger.error(f"RSS news stream error: {e}")

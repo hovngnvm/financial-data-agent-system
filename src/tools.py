@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 import matplotlib
 matplotlib.use('Agg')  # Headless backend for server environments
 import matplotlib.pyplot as plt
@@ -10,7 +11,7 @@ from src.vector_db import vector_db_manager
 from src.config import settings
 from src.utils.logger import get_logger
 
-DEFAULT_PRICES_LIMIT: int = 30
+DEFAULT_PRICES_LIMIT: int = settings.default_prices_limit
 RAG_PREFETCH_LIMIT: int = 10
 RERANK_SCORE_THRESHOLD: float = 0.1
 MAX_RETRIEVED_DOCS: int = 2
@@ -24,10 +25,10 @@ MACD_SIGNAL_SPAN: int = 9
 logger = get_logger(__name__)
 
 
-def _query_ticker_data(ticker: str, columns: str, limit: int) -> tuple[list[dict], str | None]:
+def _query_ticker_data(ticker: str, columns: str, limit: int) -> tuple[list[dict[str, Any]], str | None]:
     try:
         df = db_manager.client.query_df(
-            f"SELECT {columns} FROM prices WHERE upper(symbol) = upper(%(symbol)s) ORDER BY timestamp DESC LIMIT %(limit)s",
+            f"SELECT {columns} FROM {settings.table_prices} WHERE upper(symbol) = upper(%(symbol)s) ORDER BY timestamp DESC LIMIT %(limit)s",
             parameters={"symbol": ticker, "limit": limit}
         )
         if df.empty:
@@ -38,15 +39,15 @@ def _query_ticker_data(ticker: str, columns: str, limit: int) -> tuple[list[dict
         logger.error(f"Error in ticker query ({columns}): {e}")
         return [], str(e)
 
-def tool_get_ticker_prices(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict], str | None]:
+def tool_get_ticker_prices(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict[str, Any]], str | None]:
     """Semantic Layer Tool: Safely retrieves price history (timestamp, price, volume) for a specific symbol from ClickHouse."""
     return _query_ticker_data(ticker, "timestamp, symbol, price, volume", limit)
 
-def tool_get_ticker_indicators(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict], str | None]:
+def tool_get_ticker_indicators(ticker: str, limit: int = DEFAULT_PRICES_LIMIT) -> tuple[list[dict[str, Any]], str | None]:
     """Semantic Layer Tool: Safely retrieves technical indicators (SMA_5, SMA_20, RSI, MACD, MACD_Signal) for a specific symbol from ClickHouse."""
     return _query_ticker_data(ticker, "timestamp, symbol, price, volume, SMA_5, SMA_20, RSI, MACD, MACD_Signal", limit)
 
-def tool_semantic_rag_search(processed_query: str) -> str:
+def tool_semantic_rag_search(processed_query: str) -> tuple[str, str | None]:
     """Performs hybrid dense-sparse vector search and cross-encoder reranking on Qdrant knowledge base."""
     try:
         dense_vector = vector_db_manager.get_embedding_model().encode(processed_query).tolist()
@@ -64,7 +65,7 @@ def tool_semantic_rag_search(processed_query: str) -> str:
         search_results = hybrid_response.points if hybrid_response else []
         
         if not search_results:
-            return "No related macro-financial documents found in Vector DB."
+            return "", None
             
         rerank_pairs = [(processed_query, res.payload.get('text', '')) for res in search_results]
         scores = vector_db_manager.get_reranking_model().predict(rerank_pairs)
@@ -93,10 +94,10 @@ def tool_semantic_rag_search(processed_query: str) -> str:
             if len(final_context_list) >= MAX_RETRIEVED_DOCS:
                 break
 
-        return "\n\n".join(final_context_list)
+        return "\n\n".join(final_context_list), None
     except Exception as e:
         logger.error(f"Error during hybrid RAG retrieval: {e}")
-        return f"Error during hybrid RAG retrieval: {e}"
+        return "", str(e)
 
 OUTPUT_CHART_PATH = settings.chart_file_path
 
@@ -121,7 +122,8 @@ def tool_generate_market_chart(
     ticker: str,
     chart_type: str = "comprehensive",
     limit: int = 30,
-    output_path: str | None = None
+    output_path: str | None = None,
+    prefetched_data: list[dict[str, Any]] | None = None
 ) -> str:
     """
     Dynamic Financial Chart Generator: Renders multi-panel technical analysis charts.
@@ -140,7 +142,10 @@ def tool_generate_market_chart(
     fig = None
     
     try:
-        data_records, err = tool_get_ticker_indicators(ticker=ticker, limit=limit)
+        if prefetched_data is not None:
+            data_records, err = prefetched_data, None
+        else:
+            data_records, err = tool_get_ticker_indicators(ticker=ticker, limit=limit)
         if err or not data_records:
             return f"Failed to retrieve data for {ticker}: {err or 'Empty recordset'}"
             
