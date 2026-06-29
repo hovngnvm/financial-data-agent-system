@@ -1,10 +1,12 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from telegram.ext import Application
-from src.telegram_bot import post_init, _send_and_cleanup_chart
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
+
+from src.telegram_bot import post_init, _send_and_cleanup_chart, split_telegram_message
 from src.agent.nodes.analyst import node_purge_state
 from src.agent.graph import get_checkpointer
-from langgraph.checkpoint.memory import MemorySaver
 
 
 @pytest.mark.anyio
@@ -51,6 +53,19 @@ async def test_chart_file_path_preserved_through_state_purger():
     assert "chart_file_path" not in purged_dict
     assert purged_dict["next_worker"] == "FINISH"
     assert purged_dict["sql_data_output"] == []
+    assert purged_dict["current_target"] == "UNKNOWN"
+
+
+def test_split_telegram_message():
+    """Verifies that split_telegram_message divides long text into chunks <= max_chars."""
+    short_text = "Hello world"
+    assert split_telegram_message(short_text) == [short_text]
+
+    long_text = "Paragraph one\n\n" + ("x" * 3000) + "\n\nParagraph two\n\n" + ("y" * 3000)
+    chunks = split_telegram_message(long_text, max_chars=4000)
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk) <= 4000
 
 
 @pytest.mark.anyio
@@ -81,3 +96,11 @@ def test_get_checkpointer_fallback(mocker):
     mocker.patch("socket.create_connection", side_effect=ConnectionRefusedError("Connection refused"))
     checkpointer = get_checkpointer()
     assert isinstance(checkpointer, MemorySaver)
+
+
+def test_redis_checkpointer_instance():
+    """Verifies checkpointer returns a BaseCheckpointSaver instance with asetup or get_tuple capability."""
+    saver = get_checkpointer()
+    assert isinstance(saver, BaseCheckpointSaver)
+    assert hasattr(saver, "asetup") or hasattr(saver, "get_tuple")
+
