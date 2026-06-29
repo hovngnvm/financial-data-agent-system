@@ -17,8 +17,7 @@ from src.agent.graph import app, redis_checkpointer
 
 logger = get_logger(__name__)
 
-TELEGRAM_BOT_TOKEN = settings.telegram_bot_token
-CHART_FILE_PATH = settings.chart_file_path
+TELEGRAM_BOT_TOKEN: str = settings.telegram_bot_token
 
 # Per-chat user model provider preferences (defaulting to configured settings)
 USER_MODEL_PREFERENCES: dict[int, str] = {}
@@ -34,14 +33,15 @@ async def _send_and_cleanup_chart(
     context: ContextTypes.DEFAULT_TYPE, chat_id: int, chart_path: str | None, caption: str
 ) -> None:
     """Delivers generated market chart image to user and unlinks temporary file."""
-    target_chart = chart_path or CHART_FILE_PATH
-    if target_chart and Path(target_chart).exists():
+    if not chart_path:
+        return
+    if Path(chart_path).exists():
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
         try:
-            with open(target_chart, "rb") as chart_img:
+            with open(chart_path, "rb") as chart_img:
                 await context.bot.send_photo(chat_id=chat_id, photo=chart_img, caption=caption)
         finally:
-            Path(target_chart).unlink(missing_ok=True)
+            Path(chart_path).unlink(missing_ok=True)
 
 def get_model_keyboard(current_provider: str) -> InlineKeyboardMarkup:
     """Constructs interactive Inline Keyboard buttons for LLM model selection."""
@@ -136,6 +136,22 @@ async def process_agent_workflow(user_message: str, chat_id: int) -> tuple[str, 
         return final_state["messages"][-1].content, chart_path
     return "Agent workflow did not produce a response. Please try again.", chart_path
 
+def split_telegram_message(text: str, max_chars: int = 4000) -> list[str]:
+    """Splits text into chunks under Telegram's 4096-character limit, breaking on newlines when possible."""
+    if not text or len(text) <= max_chars:
+        return [text] if text else [""]
+    chunks: list[str] = []
+    while text:
+        if len(text) <= max_chars:
+            chunks.append(text)
+            break
+        split_idx = text.rfind("\n", 0, max_chars)
+        if split_idx <= 0:
+            split_idx = max_chars
+        chunks.append(text[:split_idx].strip())
+        text = text[split_idx:].strip()
+    return chunks
+
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Processes natural language text queries received from the user."""
     chat_id = update.effective_chat.id
@@ -145,7 +161,9 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         ai_response, chart_path = await process_agent_workflow(user_text, chat_id)
-        await update.message.reply_text(ai_response)
+        for chunk in split_telegram_message(ai_response):
+            if chunk:
+                await update.message.reply_text(chunk)
         await _send_and_cleanup_chart(
             context, chat_id, chart_path, caption="Technical analysis chart generated for your query."
         )
@@ -171,7 +189,9 @@ async def handle_analyze_command(update: Update, context: ContextTypes.DEFAULT_T
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     try:
         ai_response, chart_path = await process_agent_workflow(simulated_message, chat_id)
-        await update.message.reply_text(ai_response)
+        for chunk in split_telegram_message(ai_response):
+            if chunk:
+                await update.message.reply_text(chunk)
         await _send_and_cleanup_chart(context, chat_id, chart_path, caption=f"Technical analysis chart: {ticker}")
     except Exception as e:
         logger.error(f"Error executing /analyze for {ticker}: {e}")

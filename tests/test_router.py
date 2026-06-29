@@ -1,7 +1,9 @@
 import time
 import pytest
+from pydantic import ValidationError
 from langchain_core.messages import HumanMessage, AIMessage, trim_messages
 from src.agent.router import semantic_router
+from src.agent.nodes.driver import MultiIntentRoutePlan
 
 def test_semantic_router_sub_10ms_latency():
     """Verifies that Semantic Vector Router evaluates intents in sub-10ms latency."""
@@ -64,6 +66,11 @@ def test_semantic_router_multi_intent_clause_splitting():
     assert result["current_target"] == "HPG"
     assert result["chat"] is False
 
+def test_semantic_router_unrecognized_ticker_fallback():
+    """Verifies that queries for assets not in standard regex return None to fallback to LLM."""
+    res = semantic_router.fast_route("Xem giá cổ phiếu NVL hôm nay")
+    assert res is None
+
 def test_context_token_trimming_safety():
     """Verifies that trim_messages strictly limits conversation history to token budget."""
     # Simulate a long conversation of 20 turns
@@ -92,3 +99,14 @@ def test_context_token_trimming_safety():
     assert len(trimmed) < len(long_history)
     assert trimmed[0].type == "human" # Starts cleanly on human message
     assert trimmed[-1].content == long_history[-1].content # Retains the most recent turn
+
+
+def test_route_plan_rejects_unknown_intents():
+    """Verifies router rejects intents outside taxonomy via Literal validation."""
+    with pytest.raises(ValidationError):
+        MultiIntentRoutePlan(activated_intents=["EXECUTE_TRANSFER", "shell"])
+
+    # Valid combination works
+    plan = MultiIntentRoutePlan(activated_intents=["FETCH_PRICE"])
+    assert plan.activated_intents == ["FETCH_PRICE"]
+

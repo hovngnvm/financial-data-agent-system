@@ -10,6 +10,7 @@ from src.tools import (
     tool_semantic_rag_search
 )
 from src.vector_db import vector_db_manager
+from src.agent.nodes.sql_worker import node_sql_worker
 
 def test_tool_calculate_technical_indicators():
     data = {
@@ -126,5 +127,21 @@ def test_tool_semantic_rag_search_empty(mocker):
     mocker.patch.object(vector_db_manager, "get_embedding_model", return_value=mock_model)
     mocker.patch.object(vector_db_manager, "text_to_sparse_vector", return_value={"indices": [], "values": []})
     
-    result = tool_semantic_rag_search("Macroeconomic forecast")
-    assert "No related macro-financial documents found" in result
+    result, err = tool_semantic_rag_search("Macroeconomic forecast")
+    assert result == ""
+    assert err is None
+
+def test_tool_generate_market_chart_empty_prefetched_data_no_requery(mocker):
+    """Verifies that tool_generate_market_chart respects prefetched_data=[] without re-querying ClickHouse."""
+    mock_query = mocker.patch("src.tools.tool_get_ticker_indicators")
+    msg = tool_generate_market_chart("HPG", prefetched_data=[])
+    assert "Failed to retrieve data" in msg or "Empty recordset" in msg
+    mock_query.assert_not_called()
+
+@pytest.mark.anyio
+async def test_node_sql_worker_unknown_ticker_short_circuits(mocker):
+    """Verifies that node_sql_worker immediately returns empty output for UNKNOWN target without calling DB."""
+    mock_tool = mocker.patch("src.agent.nodes.sql_worker.tool_get_ticker_prices")
+    res = await node_sql_worker({"current_target": "UNKNOWN", "activated_intents": ["FETCH_PRICE"]})
+    assert res["sql_data_output"] == []
+    mock_tool.assert_not_called()

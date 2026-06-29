@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 if str(PROJECT_DIR) not in sys.path:
@@ -67,16 +68,16 @@ BENCHMARK_TEST_SUITE = [
 ]
 
 # Lazy-loaded benchmark models
-_dense_model = None
-_rerank_model = None
+_dense_model: SentenceTransformer | None = None
+_rerank_model: CrossEncoder | None = None
 
-def get_eval_dense_model():
+def get_eval_dense_model() -> SentenceTransformer:
     global _dense_model
     if _dense_model is None:
         _dense_model = SentenceTransformer("all-MiniLM-L6-v2")
     return _dense_model
 
-def get_eval_rerank_model():
+def get_eval_rerank_model() -> CrossEncoder:
     global _rerank_model
     if _rerank_model is None:
         model_name = os.environ.get("EVAL_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -86,7 +87,7 @@ def get_eval_rerank_model():
             _rerank_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
     return _rerank_model
 
-def setup_in_memory_benchmark_store():
+def setup_in_memory_benchmark_store() -> tuple[QdrantClient, str]:
     """Initializes an ephemeral in-memory Qdrant store seeded with benchmark test chunks."""
     client = QdrantClient(":memory:")
     collection_name = "eval_benchmark_collection"
@@ -122,7 +123,7 @@ def setup_in_memory_benchmark_store():
     client.upsert(collection_name=collection_name, points=points)
     return client, collection_name
 
-def evaluate_retrieval_query(client: QdrantClient, collection_name: str, query: str) -> list[dict]:
+def evaluate_retrieval_query(client: QdrantClient, collection_name: str, query: str) -> list[dict[str, Any]]:
     """Performs Hybrid Dense + Sparse Search and Cross-Encoder Reranking on Qdrant store."""
     dense_model = get_eval_dense_model()
     rerank_model = get_eval_rerank_model()
@@ -147,7 +148,7 @@ def evaluate_retrieval_query(client: QdrantClient, collection_name: str, query: 
     rerank_pairs = [(query, res.payload.get("text", "")) for res in search_results]
     scores = rerank_model.predict(rerank_pairs)
     
-    ranked_docs = []
+    ranked_docs: list[dict[str, Any]] = []
     for idx, score in enumerate(scores):
         ranked_docs.append({
             "child_text": search_results[idx].payload.get("text", ""),
@@ -159,7 +160,7 @@ def evaluate_retrieval_query(client: QdrantClient, collection_name: str, query: 
     return ranked_docs
 
 # Part 1: 3-Layer RAG Quality Gate Evaluation
-def run_3layer_rag_evaluation():
+def run_3layer_rag_evaluation() -> bool:
     """
     Evaluates 3-Layer RAG Pipeline:
     - Layer 1: IR Ranking Metrics (Hit@1, Hit@2, MRR)
@@ -278,7 +279,7 @@ def run_3layer_rag_evaluation():
         return False
 
 # Main Entrypoint
-def main():
+def main() -> None:
     passed = run_3layer_rag_evaluation()
     sys.exit(0 if passed else 1)
 
