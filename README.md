@@ -11,87 +11,74 @@ A **Real-time Financial Ingestion Pipeline & Multi-Agent Intelligence System**. 
 ## Architecture & Tech Stack
 
 ```mermaid
-graph LR
-    %% Nodes for Ingestion Pipeline
-    subgraph Ingestion ["Ingestion Pipeline"]
-        Sources["Raw Sources<br>(Binance WS / vnstock / RSS Feeds)"]
-        Kafka{"Apache Kafka Broker<br>(Bronze Topics / DLQ)"}
-        Consumer["Kafka Consumer<br>(Manual Commit && DLQ)"]
-        Cache["Price Cache<br>(Redis ZSET / In-memory fallback)"]
-        
-        Sources -->|Streams| Kafka
-        Kafka -->|Batch Msg| Consumer
-        Consumer -->|Compute Indicators| Cache
+flowchart TB
+    %% ==========================================
+    %% TIER 1: INGESTION
+    %% ==========================================
+    subgraph S1 ["1. Real-time Streaming Ingestion Layer"]
+        direction LR
+        Src["Market & News Sources<br/>(Binance WS | vnstock | RSS)"]
+        Kafka{"Apache Kafka Broker<br/>(Streaming Topics & DLQ)"}
+        Src -->|Live Streams| Kafka
     end
 
-    %% Databases
-    subgraph Storage ["Storage Layer"]
-        ClickHouse[("ClickHouse DB<br>(Gold Layer - ReplacingMergeTree)")]
-        Qdrant[("Qdrant Vector DB<br>(Dense + Sparse Hybrid)")]
-        
-        Consumer -->|Write Prices| ClickHouse
-        Consumer -->|Write News| Qdrant
+    %% ==========================================
+    %% TIER 2: STORAGE & CACHE
+    %% ==========================================
+    subgraph S2 ["2. Processing & Persistent Storage Layer"]
+        direction LR
+        Consumer["Kafka Stream Consumer<br/>(Technical Indicators Engine)"]
+        RedisCache[("Redis Cache<br/>(Sliding Window 30)")]
+        ClickHouse[("ClickHouse OLAP<br/>(Gold Layer: prices)")]
+        Qdrant[("Qdrant Vector DB<br/>(Hybrid Dense + Sparse)")]
+
+        Consumer <-->|Sliding Buffer| RedisCache
+        Consumer -->|Technical Bars| ClickHouse
+        Consumer -->|News Chunks| Qdrant
     end
 
-    %% Node for LangGraph Multi-Agent
-    subgraph AgentNetwork ["Multi-Agent Workflow"]
-        Telegram["Telegram Bot User Interface"]
-        Security["Security Agent<br>(Compliance && SQLi Guardrails)"]
-        Supervisor{"Supervisor Agent<br>(Routing Driver)"}
-        RedisDB[("Redis Checkpointer")]
-        
-        %% Specialist Workers
-        SQLAgent["SQL Agent<br>(Semantic Layer)"]
-        RAGAgent["RAG Agent<br>(Parent-Child RAG)"]
-        ChartAgent["Chart Agent<br>(Dynamic Session Renderer)"]
-        Analyst["Analyst Agent<br>(Memory && Report Synthesizer)"]
-        Telegram -->|User Prompt| Security
-        Security -->|Clean Prompt| Supervisor
-        
-        %% Routing
-        Supervisor -->|Route Query| SQLAgent
-        Supervisor -->|Route Query| RAGAgent
-        Supervisor -->|Route Query| ChartAgent
-        Supervisor -->|Route Query| Analyst
-        
-        %% Specialist to DB interaction
-        ClickHouse --> SQLAgent
-        Qdrant --> RAGAgent
-        ClickHouse --> ChartAgent
-        Analyst -->|Save State| RedisDB
+    %% ==========================================
+    %% TIER 3: MULTI-AGENT NETWORK
+    %% ==========================================
+    subgraph S3 ["3. Multi-Agent Intelligence Layer (LangGraph)"]
+        direction LR
+        Security["Security Shield<br/>(Regex & Length Guards)"]
+        Supervisor{"Supervisor Driver<br/>(Semantic Vector Router)"}
+        Workers["Specialist Worker Agents<br/>(SQL | RAG | Chart)"]
+        Analyst["Final Analyst Agent<br/>(Context Trimming & Multi-LLM)"]
+        Checkpointer[("Redis / Memory<br/>(Session Checkpointer)")]
 
-        %% Invisible links to force vertical separation between agents
-        SQLAgent ~~~ ChartAgent
-        ChartAgent ~~~ Analyst
-        Analyst ~~~ RAGAgent
+        Security -->|Safe Query| Supervisor
+        Supervisor -->|Task Dispatch| Workers
+        Workers -->|Evidence & Charts| Analyst
+        Analyst <-->|State Snapshot| Checkpointer
     end
 
-    %% Monitoring
-    Langfuse["Langfuse Server<br>(Telemetry && Agent Tracing)"]
-    Supervisor -.->|Trace Metrics| Langfuse
+    %% ==========================================
+    %% TIER 4: USER INTERFACE & TELEMETRY
+    %% ==========================================
+    subgraph S4 ["4. Client Interface & Telemetry"]
+        direction LR
+        Telegram["Telegram Bot Interface<br/>(Async UI & Photo Delivery)"]
+        Langfuse["Langfuse Server<br/>(Latency, Token Budget & Telemetry)"]
+    end
 
-    %% Styling with explicit text color to ensure dark/light mode compatibility
-    classDef source fill:#E5E7EB,stroke:#9CA3AF,stroke-width:2px,color:#1F2937;
-    classDef kafka fill:#FEF3C7,stroke:#FBBF24,stroke-width:2px,color:#78350F;
-    classDef db fill:#D1FAE5,stroke:#34D399,stroke-width:2px,color:#065F46;
-    classDef agent fill:#E0F2FE,stroke:#38BDF8,stroke-width:2px,color:#0369A1;
-    classDef monitor fill:#F3E8FF,stroke:#C084FC,stroke-width:2px,color:#581C87;
-    
-    class Sources source;
-    class Kafka kafka;
-    class Consumer kafka;
-    class ClickHouse db;
-    class Qdrant db;
-    class RedisDB db;
-    class Cache db;
-    class Telegram agent;
-    class Security agent;
-    class Supervisor agent;
-    class SQLAgent agent;
-    class RAGAgent agent;
-    class ChartAgent agent;
-    class Analyst agent;
-    class Langfuse monitor;
+    %% Cross-tier vertical pipelines
+    S1 ==>|Real-time Ingestion Stream| S2
+    S2 ==>|Data & Knowledge Access| S3
+    Telegram <==|Natural Language Dialogue| S3
+    S3 -.->|Execution Traces & Costs| Langfuse
+
+    %% Styling
+    classDef layer1 fill:#F3F4F6,stroke:#9CA3AF,stroke-width:2px,color:#111827;
+    classDef layer2 fill:#FEF3C7,stroke:#F59E0B,stroke-width:2px,color:#78350F;
+    classDef layer3 fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0369A1;
+    classDef layer4 fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#581C87;
+
+    class S1 layer1;
+    class S2 layer2;
+    class S3 layer3;
+    class S4 layer4;
 ```
 
 * **Streaming Orchestration:** ![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-3.7.0-231F20?style=flat&logo=apachekafka&logoColor=white)
@@ -115,6 +102,11 @@ The coordination network uses a hybrid routing strategy combining a **sub-3ms Se
 | `FETCH_NEWS` | *"Summarize recent news regarding State Bank of Vietnam interest rates"* | Fast-Path Vector Embedding Similarity (`score >= 0.55`) | **RAG Worker** | Qdrant Dense+Sparse Hybrid Index + BGE Reranker |
 | `MULTI_INTENT` | *"Analyze FPT stock price, show chart, and evaluate recent AI cloud expansion news"* | Clause Splitting + Fast-Path Centroid Similarity | **Dynamic Fan-out** (SQL + Chart + RAG concurrently $\rightarrow$ Analyst) | Parallel execution across ClickHouse, Matplotlib, and Qdrant |
 | `CHITCHAT` / `AMBIGUOUS` | *"Xin chào bạn, hôm nay thời tiết thế nào?"* | Fast-Path Centroid or LLM Reasoning Fallback (`qwen2.5-coder:1.5b`) | **Analyst Worker** | Direct dialogue synthesis with Redis chat checkpointer |
+
+* **Similarity Thresholding (`SEMANTIC_ROUTER_THRESHOLD = 0.55`):** Queries matching precomputed intent centroids above this threshold route directly to worker nodes without LLM inference overhead (< 10ms).
+* **Multi-Intent Delta Clustering (`ROUTER_SECONDARY_DELTA = 0.06`):** Evaluates multi-clause statements; secondary intents within 0.06 of top score trigger parallel execution.
+* **Fallback Margin (`ROUTER_FALLBACK_MARGIN = 0.10`):** Queries scoring within 0.10 below the primary threshold trigger structured LLM fallback reasoning (`qwen2.5-coder:1.5b-instruct`).
+* **Unrecognized Ticker Fallback:** If quantitative or charting intent is detected but no valid ticker symbol can be extracted (`target_ticker == "UNKNOWN"`), the router automatically delegates to LLM reasoning to disambiguate the target asset.
 
 ---
 
@@ -166,6 +158,9 @@ The `ChartAgent` module renders multi-panel financial charts via thread-safe, ob
 | `macd` | 2-Panel Vertical | Top: Price line<br>Bottom: MACD Line, Signal Line, and Positive/Negative Momentum Bars | Momentum convergence and divergence confirmation |
 | `volume` | 2-Panel Vertical | Top: Price line<br>Bottom: Color-coded trading volume bars | Liquidity confirmation and breakout validation |
 
+* **Prefetched Data Reuse:** When executed in compound multi-intent workflows, `Chart Worker` directly reuses quantitative records fetched by `SQL Worker` (`prefetched_data=state["sql_data_output"]`), completely avoiding duplicate database reads.
+* **Thread-Safe Session Isolation:** Renders into dynamically generated UUID image paths (`data/exports/market_chart_{uuid}.png`) and unlinks files immediately upon transmission via `_send_and_cleanup_chart`, preventing race conditions and unbounded disk usage.
+
 ---
 
 ## Pipeline Workflow
@@ -187,22 +182,63 @@ The `ChartAgent` module renders multi-panel financial charts via thread-safe, ob
 * **Shared Embedding Singleton:** Shares the loaded `SentenceTransformer` instance between Qdrant vector retrieval and the Semantic Vector Router, cutting ~120MB of duplicate model RAM.
 
 ### 4. LangGraph Multi-Agent Orchestration
-* **Security Agent:** Intercepts incoming Telegram inputs to guard against SQL injections, prompt manipulation, or jailbreaks using multi-vector regex inspection and `llama-guard3:1b`.
-* **Supervisor Agent & Fast Semantic Router:** Evaluates intent via a sub-3ms `SemanticVectorRouter` with Multi-Threshold matching and Clause Splitting. Falls back to structured LLM reasoning (`qwen2.5-coder:1.5b`) on ambiguous input.
-* **Dynamic Conditional Fan-out:** Branches execution concurrently to relevant workers (SQL Agent, RAG Agent, Chart Agent, or direct to Analyst), eliminating unnecessary sequential steps.
-* **SQL Agent:** Directly queries prices and technical indicators via ClickHouse Semantic Layer tools using intents and targets pre-classified by the Supervisor, eliminating redundant LLM latency.
-* **RAG Agent:** Executes hybrid dense/sparse searches against Qdrant, reranks text candidates using a cross-encoder model (`bge-reranker-v2-m3`), and fetches the expanded parent document context.
-* **Chart Agent:** Dynamically generates multi-panel technical analysis charts using object-oriented, thread-safe headless Matplotlib with custom session-isolated output paths.
-* **Analyst Agent & In-Flight Context Trimming:** Synthesizes final reports combining quantitative ClickHouse metrics and Qdrant macro context. Applies `trim_messages` to constrain chat history within an 800-token budget while preserving the complete conversation snapshot in RedisSaver. Supports runtime switching between Local Ollama (`qwen2.5:1.5b-instruct`) and Cloud AI (OpenAI, Gemini, DeepSeek, Groq).
+
+```mermaid
+flowchart TD
+    UserQuery(["User Query / Telegram Input"]) --> SecurityNode["Security Shield<br/>(Length & Regex Guards)"]
+    
+    SecurityNode -->|MALICIOUS: Pattern or Length Exceeded| PurgerNode["State Purger<br/>(Reset State & RemoveMessage)"]
+    SecurityNode -->|SAFE: Valid Input| DriverNode{"Supervisor Driver<br/>(Semantic Vector Router)"}
+
+    DriverNode -->|Price / Indicator / Chart| SQLNode["SQL Worker<br/>(ClickHouse Semantic Layer)"]
+    DriverNode -->|Macro News Search| RAGNode["RAG Worker<br/>(Qdrant Hybrid + BGE Rerank)"]
+    DriverNode -->|Direct Chitchat / Fallback| AnalystNode["Final Analyst<br/>(Context Trimming & LLM)"]
+
+    SQLNode --> BarrierNode{"Join Barrier<br/>(Fork-Join Sync)"}
+    RAGNode --> BarrierNode
+
+    BarrierNode -->|RENDER_CHART Active| ChartNode["Chart Worker<br/>(Reuses Prefetched SQL Data)"]
+    BarrierNode -->|No Chart Requested| AnalystNode
+    ChartNode --> AnalystNode
+
+    AnalystNode --> PurgerNode
+    PurgerNode --> EndNode(["END / Telegram Response"])
+
+    %% Styling
+    classDef io fill:#F3F4F6,stroke:#9CA3AF,stroke-width:2px,color:#111827;
+    classDef guard fill:#FEE2E2,stroke:#EF4444,stroke-width:2px,color:#7F1D1D;
+    classDef router fill:#FEF3C7,stroke:#F59E0B,stroke-width:2px,color:#78350F;
+    classDef worker fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0369A1;
+    classDef sync fill:#EDE9FE,stroke:#8B5CF6,stroke-width:2px,color:#4C1D95;
+
+    class UserQuery,EndNode io;
+    class SecurityNode,PurgerNode guard;
+    class DriverNode router;
+    class SQLNode,RAGNode,ChartNode,AnalystNode worker;
+    class BarrierNode sync;
+```
+
+* **Security Shield:** Sub-millisecond deterministic regex and length validation (`MAX_INPUT_LENGTH = 1000`) guarding against SQL injection and jailbreaks. Blocked requests immediately bypass execution and transition to `state_purger`.
+* **Supervisor Agent & Fast Semantic Router:** Evaluates intent via `SemanticVectorRouter` with lazy-loaded embeddings and precomputed centroids (`@functools.cached_property`), clause splitting, and fallback to structured reasoning (`qwen2.5-coder:1.5b-instruct`) when tickers are ambiguous.
+* **Dynamic Conditional Fan-out & Join Barrier:** Branches execution concurrently to `SQL Worker` (for price, indicators, or chart data) and `RAG Worker` (for news context). Execution flows through a synchronized `Join Barrier` before conditionally triggering `Chart Worker` or proceeding directly to `Final Analyst`.
+* **SQL Worker:** Executes parameterized queries against ClickHouse via Semantic Layer tools (`tool_get_ticker_prices`, `tool_get_ticker_indicators`) using non-blocking async execution (`asyncio.to_thread`) and bounded retry backoff.
+* **RAG Worker:** Executes hybrid dense/sparse searches against Qdrant, reranks candidates using a cross-encoder model (`bge-reranker-v2-m3`), and fetches expanded parent document context.
+* **Chart Worker & Prefetched Data Reuse:** Dynamically renders technical charts using headless Matplotlib. If `SQL Worker` has already retrieved indicator data in parallel fan-out, `Chart Worker` consumes `prefetched_data` directly, avoiding redundant ClickHouse reads.
+* **Analyst Agent & In-Flight Context Trimming:** Synthesizes final reports combining verified ClickHouse metrics and Qdrant macro context. Applies `trim_messages` to constrain chat history within an 800-token budget while isolating untrusted news within `<untrusted_news_context>` tags. Supports runtime switching between Local Ollama (`qwen2.5:1.5b-instruct`) and Cloud AI (OpenAI, Gemini, DeepSeek, Groq).
+* **State Purger & Conversation Bounding:** Resets transient execution outputs between turns and prunes persisted conversation history exceeding `MAX_HISTORY_MESSAGES` (20) in the checkpointer using LangGraph `RemoveMessage` primitives.
 
 ---
 
 ## Key Engineering Highlights
 
-* **Thread-Safe Dynamic Chart Generation:** Generates chart image files with session-isolated target paths (`chart_path` in `AgentState`) and safely cleans them up after transmission, preventing concurrent user file collision and race conditions.
+* **Prefetched Data Reuse across Multi-Agent Fan-out:** In compound requests requiring both quantitative lookup and charting, Chart Worker consumes cached indicator data from SQL Worker directly via `AgentState`, eliminating duplicate database queries.
+* **Bounded Checkpointer Memory via Pruning:** State Purger systematically emits LangGraph `RemoveMessage` objects to bound Redis conversation state within `MAX_HISTORY_MESSAGES` (20), preventing memory leaks in long-running chat sessions.
+* **Telegram Boundary-Aware Message Splitting:** Automatically partitions long analyst briefings into clean chunks under 4000 characters along newline boundaries (`split_telegram_message`), guaranteeing zero dropped messages.
+* **Deterministic Input Security Guardrails:** Combines rule-based regex patterns for SQL injection (`UNION SELECT`, `INSERT INTO`) and prompt jailbreaks (`disregard rules`, `act as DAN`) with length bounds (`MAX_INPUT_LENGTH = 1000`) for sub-millisecond fail-fast rejection.
+* **Thread-Safe Dynamic Chart Generation:** Generates chart image files with session-isolated target paths (`chart_path` in `AgentState`) and safely cleans them up after transmission, preventing concurrent user file collisions and race conditions.
 * **Deterministic Parameterized SQL Matching:** Eliminates SQL dialect syntax issues and injection risks by enforcing parameter-driven execution with strict case-insensitive symbol matching and subquery chronological ordering.
-* **Multi-Vector Security Guardrails:** Combines rule-based regex patterns for SQL injection (`UNION SELECT`, `INSERT INTO`) and prompt jailbreaks (`disregard rules`, `act as DAN`) with Llama-Guard fail-safe verification.
 * **Multi-Provider LLM Switcher:** Users can toggle between Local Ollama and Cloud AI providers dynamically via Telegram UI buttons (`/model`) or environment configurations.
+* **Strict Python 3.10+ Literal Typing:** State schema employs static `Literal` types for `Intent`, `ChartMode`, `SecurityStatus`, `NextWorker`, and `AnalystProvider`, eliminating string-based runtime state errors.
 * **3-Layer RAG Quality Gate:** Automated evaluation testing IR metrics (Hit@1, Hit@2, MRR), fact recall, and latency guards.
 * **High-Throughput Batch Vectorization:** Replaces per-item encoding with batched tensor calculations (`batch_size=32`), achieving 5x–10x faster vector database ingestion.
 * **Zero-Leak Stream Buffers:** Protects continuous 24/7 RSS ingestion using a bounded sliding FIFO dictionary to prevent memory leaks.
@@ -221,17 +257,17 @@ financial-data-agent-system/
 ├── src/
 │   ├── agent/                         # Multi-Agent Coordination Network
 │   │   ├── nodes/
-│   │   │   ├── analyst.py             # Coordinator: synthesizes reports, manages session states
-│   │   │   ├── chart_worker.py        # Chart Agent: generates technical charts with dynamic paths
+│   │   │   ├── analyst.py             # Coordinator: synthesizes reports, manages session states & state purging
+│   │   │   ├── chart_worker.py        # Chart Agent: generates technical charts with dynamic paths & prefetched data reuse
 │   │   │   ├── driver.py              # Supervisor Agent: routes to specialist workers (Fast-Path + LLM Fallback)
 │   │   │   ├── rag_worker.py          # RAG Agent: performs sparse/dense hybrid searches
-│   │   │   ├── security.py            # Guardrail Agent: validates prompt compliance and security
+│   │   │   ├── security.py            # Guardrail Agent: validates prompt length and regex security
 │   │   │   └── sql_worker.py          # SQL Agent: queries prices and indicators via Semantic Layer
 │   │   ├── callbacks.py               # Langfuse tracing integrations
-│   │   ├── graph.py                   # LangGraph assembly (state, dynamic fan-out, checkpointer)
+│   │   ├── graph.py                   # LangGraph assembly (state machine, dynamic fan-out, barrier, checkpointer)
 │   │   ├── prompts.py                 # Multi-Intent and agent system prompts
 │   │   ├── router.py                  # Sub-3ms Semantic Vector Router with Multi-Threshold & Clause Splitting
-│   │   └── state.py                   # AgentState schema definition
+│   │   └── state.py                   # AgentState schema with strict Literal types
 │   │
 │   ├── config/
 │   │   ├── __init__.py                # Settings package initialization & exports
@@ -245,11 +281,11 @@ financial-data-agent-system/
 │   ├── consumer.py                    # Kafka Consumer with Manual Commits, DLQ & PriceCacheManager
 │   ├── database.py                    # ClickHouse schema definition (ReplacingMergeTree) and ingest engine
 │   ├── producer.py                    # Binance WS, vnstock polling, RSS financial feeds producer
-│   ├── telegram_bot.py                # Telegram Bot handler running LangGraph workflows async
+│   ├── telegram_bot.py                # Telegram Bot handler running LangGraph workflows async & message chunking
 │   ├── tools.py                       # SQL execution, hybrid vector retrieval, dynamic chart rendering
 │   └── vector_db.py                   # Qdrant hybrid (dense + sparse index HNSW) schema & ingest
 │
-├── tests/                             # Full Unit & Evaluation Test Suite
+├── tests/                             # Full Unit & Evaluation Test Suite (64 tests passed)
 │   ├── evaluate.py                    # 3-Layer RAG Quality Gate Evaluation Suite
 │   ├── seed_data.py                   # Test dataset initialization fixtures
 │   ├── test_chunking.py               # Markdown table and hierarchical chunking tests
@@ -258,6 +294,7 @@ financial-data-agent-system/
 │   ├── test_prompt_integrity.py       # Prompt contracts and multi-agent node integrity tests
 │   ├── test_router.py                 # Semantic Vector Router and Context Trimming tests
 │   ├── test_security_guard.py         # Security injection guardrails and route plan tests
+│   ├── test_telegram_integration.py   # Telegram bot async lifecycle, checkpointer & message splitting tests
 │   ├── test_tools.py                  # Semantic layer tools and dynamic chart rendering tests
 │   └── test_vector_db.py              # Qdrant hybrid vector search tests
 │
@@ -325,6 +362,8 @@ The system utilizes centralized Pydantic v2 settings (`src/config/settings.py`) 
 | `DB_USER` | Database | `str` | `finuser` | ClickHouse username |
 | `DB_PASSWORD` | Database | `str` | `finpassword` | ClickHouse user password |
 | `DB_NAME` | Database | `str` | `finance_db` | Target database name |
+| `TABLE_PRICES` | Database | `str` | `prices` | ClickHouse table name for market price data |
+| `DEFAULT_PRICES_LIMIT` | Semantic Layer | `int` | `30` | Default record limit for historical price and indicator queries |
 | `QDRANT_HOST` | Vector DB | `str` | `localhost` | Qdrant vector database host |
 | `QDRANT_PORT` | Vector DB | `int` | `6333` | Qdrant HTTP interface port |
 | `QDRANT_COLLECTION` | Vector DB | `str` | `financial_reports` | Qdrant collection name |
@@ -346,13 +385,23 @@ The system utilizes centralized Pydantic v2 settings (`src/config/settings.py`) 
 | `LLM_GUARD_MODEL` | Local LLM | `str` | `llama-guard3:1b-q5_K_S` | Ollama model for security guardrails |
 | `ANALYST_LLM_PROVIDER` | Multi-Provider | `str` | `local` | Active provider: `local`, `openai`, `gemini`, `deepseek`, `groq` |
 | `ANALYST_TEMPERATURE` | Multi-Provider | `float` | `0.3` | Analyst LLM temperature (0.0–1.0) |
+| `ANALYST_API_MODEL` | Multi-Provider | `str` | `gpt-4o-mini` | Default model identifier for Cloud AI providers |
+| `ANALYST_API_BASE_URL` | Multi-Provider | `str \| None` | `None` | Custom API endpoint base URL for Cloud AI providers |
 | `OPENAI_API_KEY` | Cloud AI | `str` | `""` | OpenAI API key for GPT models |
 | `GEMINI_API_KEY` | Cloud AI | `str` | `""` | Google Gemini API key |
 | `DEEPSEEK_API_KEY` | Cloud AI | `str` | `""` | DeepSeek API key |
+| `DEEPSEEK_BASE_URL` | Cloud AI | `str` | `https://api.deepseek.com` | DeepSeek API base URL endpoint |
 | `GROQ_API_KEY` | Cloud AI | `str` | `""` | Groq high-speed inference API key |
+| `GROQ_BASE_URL` | Cloud AI | `str` | `https://api.groq.com/openai/v1` | Groq API base URL endpoint |
+| `MAX_INPUT_LENGTH` | Security | `int` | `1000` | Maximum character length allowed for user input queries |
 | `MAX_HISTORY_TOKENS` | Memory Budget | `int` | `800` | Token budget limit for conversation context window trimming |
+| `MAX_HISTORY_MESSAGES` | Memory Budget | `int` | `20` | Maximum message count kept in conversation window |
 | `SEMANTIC_ROUTER_THRESHOLD` | Routing | `float` | `0.55` | Similarity threshold for fast-path vector routing |
+| `ROUTER_SECONDARY_DELTA` | Routing | `float` | `0.06` | Threshold delta for multi-intent centroid clustering |
+| `ROUTER_FALLBACK_MARGIN` | Routing | `float` | `0.10` | Margin below threshold to trigger LLM fallback reasoning |
+| `TRACKED_STOCK_SYMBOLS` | Market Data | `list[str]` | `["HPG", "FPT", "SSI", "VND", "MBB", "TCB"]` | Tracked stock tickers for real-time polling |
 | `VNSTOCK_API_KEY` | Market Data | `str` | `""` | API key for vnstock market feed (optional) |
+| `CHART_FILE_PATH` | File Paths | `str` | `data/exports/market_chart.png` | Fallback file path for generated market charts |
 
 ---
 
