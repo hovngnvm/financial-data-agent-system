@@ -6,5 +6,9 @@ pandas
 pytest
 flake8
 black
-sqlalchemy
-psycopg2-binary
+clickhouse-connect
+mmh3
+pydantic-settings
+langfuse
+pytest-mock
+aiokafka
