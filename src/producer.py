@@ -5,13 +5,18 @@ import feedparser
 import aiohttp
 from datetime import datetime
 from aiokafka import AIOKafkaProducer
-from vnstock import Vnstock # Sử dụng thư viện vnstock4 thật mảng chứng khoán Việt Nam
+from vnstock import Vnstock # Real-time stock data feed for Vietnam stocks
 
-KAFKA_BROKER = "localhost:9092"
-TOPIC_MARKET = "finagent_bronze_market"
-TOPIC_NEWS = "finagent_bronze_news"
+from src.config import settings
+from src.logger import get_logger
 
-# Khởi tạo instance vnstock4 mảng chứng khoán
+logger = get_logger(__name__)
+
+KAFKA_BROKER = settings.kafka_broker
+TOPIC_MARKET = settings.topic_market
+TOPIC_NEWS = settings.topic_news
+
+# Initialize stock client
 stock_client = Vnstock()
 
 async def get_producer():
@@ -23,10 +28,10 @@ async def get_producer():
     return producer
 
 async def stream_binance_websocket(producer):
-    """Kết nối WebSocket trực tiếp đến Binance Live Stream API"""
+    """Connects directly to the Binance trade stream via WebSockets"""
     streams = "btcusdt@trade/ethusdt@trade"
     socket_url = f"wss://stream.binance.com:9443/stream?streams={streams}"
-    print("-> [Bronze Ingestion]: Đang mở kết nối WebSocket trực tiếp tới Binance Trade Stream...")
+    logger.info("-> [Bronze Ingestion]: Opening live WebSocket connection to Binance Trade Stream...")
     
     while True:
         try:
@@ -35,45 +40,46 @@ async def stream_binance_websocket(producer):
                     msg = await ws.recv()
                     data = json.loads(msg)
                     
-                    # Mapping chuẩn Data Contract
+                    # Map to standard Data Contract format
+                    trade_data = data.get('data', data)  # Support both raw single stream and combined streams format
                     payload = {
                         "ingest_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
                         "data_source": "binance_websocket_live",
                         "asset_class": "CRYPTO",
                         "payload": {
-                            "symbol": data['s'],              # Ví dụ: BTCUSDT
-                            "price": float(data['p']),         # Giá khớp lệnh thật
-                            "volume": float(data['q'])         # Khối lượng thật
+                            "symbol": trade_data['s'],              # e.g., BTCUSDT
+                            "price": float(trade_data['p']),         # real-time price
+                            "volume": float(trade_data['q'])         # real-time quantity
                         }
                     }
-                    #### load to Kafka
+                    # Send to Kafka
                     await producer.send_and_wait(TOPIC_MARKET, payload) 
                     
         except websockets.exceptions.ConnectionClosed:
-            print("-> [Bronze Ingestion]: Mất kết nối Binance WS. Đang kích hoạt cơ chế Auto-reconnect...")
+            logger.warning("-> [Bronze Ingestion]: Binance WS connection lost. Reconnecting in 5s...")
             await asyncio.sleep(5)
         except Exception as e:
-            print(f"Lỗi luồng Binance WS: {str(e)}")
+            logger.error(f"Binance WS stream error: {str(e)}")
             await asyncio.sleep(5)
 
 async def stream_vnstock_polling(producer):
-    """Sử dụng thư viện vnstock bốc giá Realtime của các mã chứng khoán SSI, VND"""
-    print("-> [Bronze Ingestion]: Đang khởi động luồng Polling REST API qua vnstock...")
+    """Polls real-time price boards for selected stocks SSI, VND, etc. using vnstock"""
+    logger.info("-> [Bronze Ingestion]: Initializing REST API Polling stream via vnstock...")
     symbols = [
-            # Thép & Công nghệ
+            # Steel & Tech
             "HPG", "FPT", 
-            # Chứng khoán (Biến động mạnh)
+            # Securities
             "VIX", "SSI", "VND", 
-            # Ngân hàng (Thanh khoản cao)
+            # Banking
             "SHB", "STB", "VPB", "MBB", "TCB",
-            # Bất động sản / Trụ
+            # Real Estate & Index Heavyweights
             "VIC", "VHM"
-]
+    ]
     
     while True:
         try:
             for sym in symbols:
-                # Gọi hàm bốc giá thời gian thực thật từ vnstock
+                # Fetch real-time quotes via vnstock API
                 stock_data = stock_client.stock(symbol=sym, source='VCI').trading.price_board()
                 if not stock_data.empty:
                     latest_row = stock_data.iloc[0]
@@ -83,19 +89,19 @@ async def stream_vnstock_polling(producer):
                         "asset_class": "STOCK",
                         "payload": {
                             "symbol": sym,
-                            "price": float(latest_row['matchPrice']), # Giá khớp thật sàn VN
-                            "volume": float(latest_row['matchVolume']) # Khối lượng khớp thật
+                            "price": float(latest_row['matchPrice']), # Match price
+                            "volume": float(latest_row['matchVolume']) # Match volume
                         }
                     }
                     await producer.send_and_wait(TOPIC_MARKET, payload)
-            await asyncio.sleep(2) # Polling rate 2 giây/lần đạt chuẩn REST Rate-limit
+            await asyncio.sleep(2) # Polling rate 2 seconds to respect API rate limits
         except Exception as e:
-            print(f"Lỗi luồng vnstock: {str(e)}")
+            logger.error(f"vnstock stream error: {str(e)}")
             await asyncio.sleep(5)
 
 async def stream_rss_news_feeds(producer):
-    """Cào trực tiếp tin tức kinh tế vĩ mô từ các kênh RSS lớn (Cafef / VnExpress)"""
-    print("-> [Bronze Ingestion]: Khởi động luồng lắng nghe tin tức RSS Feeds thật...")
+    """Scrapes financial news stories from macro feeds (Cafef / Vietstock / VnExpress)"""
+    logger.info("-> [Bronze Ingestion]: Starting live listener for financial RSS feeds...")
     rss_urls = [
         "https://cafef.vn/thi-truong-chung-khoan.rss",
         "https://cafef.vn/kinh-te-vi-mo.rss",
@@ -103,13 +109,13 @@ async def stream_rss_news_feeds(producer):
         "https://vietstock.vn/rss/tin-moi-nhat.rss",
         "https://vnexpress.net/rss/kinh-doanh.rss"
     ]
-    seen_guid = set() # Bộ nhớ đệm chống trùng lặp tin bài cũ
+    seen_guid = set() # Local cache to filter duplicate news items
     
     while True:
         try:
             for url in rss_urls:
                 feed = feedparser.parse(url)
-                for entry in feed.entries[:3]: # Lấy 3 tin mới nhất mỗi chu kỳ quét
+                for entry in feed.entries[:3]: # Retrieve top 3 news items per cycle
                     guid = entry.get('id', entry.get('link', ''))
                     if guid not in seen_guid:
                         seen_guid.add(guid)
@@ -125,15 +131,15 @@ async def stream_rss_news_feeds(producer):
                             }
                         }
                         await producer.send_and_wait(TOPIC_NEWS, payload)
-            await asyncio.sleep(15) # Quét RSS định kỳ 15 giây/lần
+            await asyncio.sleep(15) # Scan feeds every 15 seconds
         except Exception as e:
-            print(f"Lỗi luồng RSS News: {str(e)}")
+            logger.error(f"RSS news stream error: {str(e)}")
             await asyncio.sleep(10)
-
+            
 async def main():
     producer = await get_producer()
     try:
-        # Fan-in Asyncio Gather: Phóng song song 4 luồng dữ liệu thật chạy bất đồng bộ đồng thời
+        # Asynchronous gather: launch parallel real-time ingestion streams concurrently
         await asyncio.gather(
             stream_binance_websocket(producer),
             stream_vnstock_polling(producer),
