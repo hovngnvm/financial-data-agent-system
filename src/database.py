@@ -1,56 +1,110 @@
 import os
 import pandas as pd
-from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+import clickhouse_connect
+from src.config import settings
+from src.logger import get_logger
 
-load_dotenv()
+logger = get_logger(__name__)
 
-# Tạo URI kết nối PostgreSQL từ biến môi trường
-DB_USER = os.getenv("DB_USER", "finuser")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "finpassword")
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "finance_db")
+class DatabaseManager:
+    def __init__(self):
+        self.host = settings.db_host
+        self.port = settings.db_port
+        self.user = settings.db_user
+        self.password = settings.db_password
+        self.database = settings.db_name
+        self._client = None
 
-# Dùng kết nối trực tiếp nội bộ hoặc từ host ngoài dựa trên ngữ cảnh chạy
-POSTGRES_URI = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-db_engine = create_engine(POSTGRES_URI)
+    @property
+    def client(self):
+        """Lazy-loaded ClickHouse Connect Client"""
+        if self._client is None:
+            self._client = clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password,
+                database=self.database
+            )
+        return self._client
 
-def init_relational_database():
-    """Khởi tạo kết nối và tạo cấu trúc bảng tối ưu trên PostgreSQL"""
-    with db_engine.begin() as conn:
-        # Tạo bảng giá chuẩn hóa dữ liệu định lượng
-        conn.execute(text("""
+    def init_db(self):
+        """Initializes database and tables in ClickHouse using ReplacingMergeTree"""
+        temp_client = None
+        try:
+            # Connect without database first to ensure db exists
+            temp_client = clickhouse_connect.get_client(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password
+            )
+            temp_client.command(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+        except Exception as e:
+            logger.warning(f"Failed to pre-create database {self.database}: {e}")
+        finally:
+            if temp_client:
+                temp_client.close()
+
+        # Connect to target database and create table with ReplacingMergeTree
+        client = self.client
+        client.command("""
             CREATE TABLE IF NOT EXISTS prices (
-                timestamp TIMESTAMP,
-                symbol VARCHAR(20),
-                price DOUBLE PRECISION,
-                volume DOUBLE PRECISION,
-                SMA_5 DOUBLE PRECISION,
-                SMA_20 DOUBLE PRECISION,
-                RSI DOUBLE PRECISION,
-                MACD DOUBLE PRECISION,
-                MACD_Signal DOUBLE PRECISION
-            );
-        """))
+                timestamp DateTime,
+                symbol LowCardinality(String),
+                price Float64,
+                volume Float64,
+                SMA_5 Float64,
+                SMA_20 Float64,
+                RSI Float64,
+                MACD Float64,
+                MACD_Signal Float64
+            ) ENGINE = ReplacingMergeTree()
+            ORDER BY (symbol, timestamp);
+        """)
+        logger.info(f"-> [ClickHouse]: Database schema successfully initialized at {self.host}:{self.port}")
+
+    def ingest_df(self, dataframe, table_name="prices", mode="append"):
+        """
+        Ingests a Pandas DataFrame into the ClickHouse database.
+        """
+        if dataframe is None or dataframe.empty:
+            return
+        dataframe = dataframe.copy()
+        dataframe.columns = dataframe.columns.str.lower()
+
+        # Format timestamp to correct timezone-naive datetime
+        if 'timestamp' in dataframe.columns:
+            dataframe['timestamp'] = pd.to_datetime(dataframe['timestamp'])
         
-        # Thiết lập Index tối ưu hóa tốc độ tìm kiếm Time-Series cho SQL Agent
-        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_symbol_timestamp ON prices (symbol, timestamp DESC);"))
-    print(f"-> [PostgreSQL]: Đã khởi tạo cấu trúc cơ sở dữ liệu Enterprise thành công tại {DB_HOST}:{DB_PORT}")
+        # ClickHouse truncation before append if mode is 'replace'
+        if mode == "replace":
+            self.client.command(f"TRUNCATE TABLE {table_name}")
+        
+        # Align column names to exact casing in ClickHouse schema
+        column_mapping = {
+            'timestamp': 'timestamp',
+            'symbol': 'symbol',
+            'price': 'price',
+            'volume': 'volume',
+            'sma_5': 'SMA_5',
+            'sma_20': 'SMA_20',
+            'rsi': 'RSI',
+            'macd': 'MACD',
+            'macd_signal': 'MACD_Signal'
+        }
+        dataframe = dataframe.rename(columns={k: v for k, v in column_mapping.items() if k in dataframe.columns})
+        
+        # Write to ClickHouse
+        self.client.insert_df(table_name, dataframe)
+        logger.info(f"-> [ClickHouse]: Ingested {len(dataframe)} rows into table '{table_name}'")
+
+# Initialize global DatabaseManager instance for shared workspace usage
+db_manager = DatabaseManager()
+
+# Backward-compatibility wrappers
+def init_relational_database():
+    db_manager.init_db()
 
 def ingest_data_to_db(dataframe, table_name="prices", mode="append"):
-    """
-    Nhận vào một Pandas DataFrame và nạp dồn vào PostgreSQL.
-    Tên hàm được giữ nguyên để tránh làm gãy các dependency import khác.
-    """
-    if dataframe is None or dataframe.empty:
-        return
-        
-    # Chuyển đổi timestamp sang đúng định dạng trước khi đổ vào Postgres TIMESTAMP
-    if 'timestamp' in dataframe.columns:
-        dataframe['timestamp'] = pd.to_datetime(dataframe['timestamp'])
-        
-    if_exists_mode = "replace" if mode == "replace" else "append"
-    
-    # Ghi dữ liệu hiệu năng cao thông qua SQLAlchemy Engine
-    dataframe.to_sql(table_name, con=db_engine, if_exists=if_exists_mode, index=False, method='multi')
+    db_manager.ingest_df(dataframe, table_name=table_name, mode=mode)

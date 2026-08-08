@@ -1,46 +1,65 @@
 import os
 import json
-import psycopg2
 import pandas as pd
 import matplotlib.pyplot as plt
-from psycopg2.extras import RealDictCursor
-from sqlalchemy import text
 from langchain_ollama import OllamaLLM
-from qdrant_client.models import PrefetchQuery, QueryRequest
+from qdrant_client.models import Prefetch, QueryRequest
 
-from src.database import db_engine, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
-from src.vector_db import qdrant_client, COLLECTION_NAME, embedding_model, reranking_model, _text_to_sparse_vector
+from src.database import db_manager
+from src.vector_db import qdrant_client, COLLECTION_NAME, get_embedding_model, get_reranking_model, _text_to_sparse_vector
+from src.config import settings
+from src.logger import get_logger
 
-# Khởi tạo instance LLM phụ trợ riêng cho các tác vụ Context Engineering
-rag_llm = OllamaLLM(model="qwen2.5-coder:3b-instruct-q5_K_S", temperature=0.1)
+logger = get_logger(__name__)
 
-def tool_run_sqlite_query(sql_command: str):
-    """Driver kết nối PostgreSQL phục vụ SQL Agent truy vấn dữ liệu lớn (Đã đồng bộ ở GĐ1)"""
-    conn = None
+# Lazy loading LLM instance specifically for Context Engineering tasks
+_rag_llm = None
+
+def get_rag_llm():
+    global _rag_llm
+    if _rag_llm is None:
+        _rag_llm = OllamaLLM(model=settings.llm_coder_model, temperature=0.1)
+    return _rag_llm
+
+def tool_get_ticker_prices(ticker: str, limit: int = 30):
+    """Semantic Layer Tool: Safely retrieves price history (timestamp, price, volume) for a specific symbol from ClickHouse."""
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASSWORD, port=DB_PORT
+        df = db_manager.client.query_df(
+            "SELECT timestamp, symbol, price, volume FROM prices WHERE symbol = %(symbol)s ORDER BY timestamp DESC LIMIT %(limit)s",
+            parameters={"symbol": ticker, "limit": limit}
         )
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute(sql_command)
-        if cursor.description:
-            rows = cursor.fetchall()
-            return [dict(row) for row in rows], None
-        conn.commit()
-        return [{"status": "Success"}], None
+        if df.empty:
+            return [], None
+        # Convert timestamp to string format for serialization
+        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df.to_dict(orient='records'), None
     except Exception as e:
+        logger.error(f"Error in tool_get_ticker_prices: {e}")
         return [], str(e)
-    finally:
-        if conn:
-            conn.close()
+
+def tool_get_ticker_indicators(ticker: str, limit: int = 30):
+    """Semantic Layer Tool: Safely retrieves technical indicators (SMA_5, SMA_20, RSI, MACD, MACD_Signal) for a specific symbol from ClickHouse."""
+    try:
+        df = db_manager.client.query_df(
+            "SELECT timestamp, symbol, price, SMA_5, SMA_20, RSI, MACD, MACD_Signal FROM prices WHERE symbol = %(symbol)s ORDER BY timestamp DESC LIMIT %(limit)s",
+            parameters={"symbol": ticker, "limit": limit}
+        )
+        if df.empty:
+            return [], None
+        # Convert timestamp to string format for serialization
+        df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df.to_dict(orient='records'), None
+    except Exception as e:
+        logger.error(f"Error in tool_get_ticker_indicators: {e}")
+        return [], str(e)
 
 def tool_semantic_rag_search(processed_query: str) -> str:
     try:
-        dense_vector = embedding_model.encode(processed_query).tolist()
+        dense_vector = get_embedding_model().encode(processed_query).tolist()
         sparse_vector = _text_to_sparse_vector(processed_query)
         
-        prefetch_dense = PrefetchQuery(vector=dense_vector, limit=10)
-        prefetch_sparse = PrefetchQuery(vector={"name": "text-sparse", "vector": sparse_vector}, limit=10)
+        prefetch_dense = Prefetch(vector=dense_vector, limit=10)
+        prefetch_sparse = Prefetch(vector={"name": "text-sparse", "vector": sparse_vector}, limit=10)
         
         hybrid_results = qdrant_client.query_batch_points(
             collection_name=COLLECTION_NAME,
@@ -51,14 +70,14 @@ def tool_semantic_rag_search(processed_query: str) -> str:
         if not search_results:
             return "Không tìm thấy tài liệu phân tích vĩ mô liên quan trong Vector DB."
             
-        # CHẤM ĐIỂM NGỮ NGHĨA DỰA TRÊN CHILD CHUNK ĐỂ ĐẢM BẢO PRECISION ĐẠT ĐỈNH
+        # SEMANTIC RERANKING BASED ON CHILD CHUNK TO ENSURE HIGH PRECISION
         rerank_pairs = [(processed_query, res.payload.get('text', '')) for res in search_results]
-        scores = reranking_model.predict(rerank_pairs)
+        scores = get_reranking_model().predict(rerank_pairs)
         
         ranked_docs = []
         for idx, score in enumerate(scores):
             ranked_docs.append({
-                # ĐỘT PHÁ KIẾN TRÚC: Bốc Parent Text lớn thay vì Child Text thô
+                # ARCHITECTURAL DECISION: Fetch Parent Text instead of Child Text
                 "parent_context": search_results[idx].payload.get('parent_text', search_results[idx].payload.get('text', '')),
                 "source": search_results[idx].payload.get('source', 'N/A'),
                 "rerank_score": float(score)
@@ -71,30 +90,32 @@ def tool_semantic_rag_search(processed_query: str) -> str:
         for doc in ranked_docs:
             if doc["rerank_score"] < 0.1: 
                 continue
-            # Lọc trùng lặp trên tầng Parent Context lớn
+            # Filter duplicates on the Parent Context layer
             context_hash = doc["parent_context"][:150]
             if context_hash not in seen_contexts:
                 seen_contexts.add(context_hash)
                 final_context_list.append(
                     f"Context: {doc['parent_context']} (Source: {doc['source']} | Score: {doc['rerank_score']:.2f})"
                 )
-            if len(final_context_list) >= 2: # Giới hạn 2 Parent lớn để tránh làm loãng Token Context
+            if len(final_context_list) >= 2: # Limit to 2 Parent contexts to avoid token dilution
                 break
 
         return "\n\n".join(final_context_list)
     except Exception as e:
         return f"Lỗi trong hệ thống Hybrid Parent-Child RAG: {str(e)}"
     
-OUTPUT_CHART_PATH = "data/exports/market_chart.png"
+OUTPUT_CHART_PATH = settings.chart_file_path
 
 def tool_generate_market_chart(ticker: str) -> str:
-    """Kết xuất đồ thị giá tự động thích ứng với cấu trúc PostgreSQL Gold Layer"""
+    """Renders price trend chart adapted to the ClickHouse dataset structure"""
     if not ticker or ticker in ["UNKNOWN", "NONE"]:
         return "Không có mã cụ thể để vẽ biểu đồ."
         
     try:
-        query = "SELECT timestamp, price, volume FROM prices WHERE symbol = %s ORDER BY timestamp ASC;"
-        df = pd.read_sql_query(query, db_engine, params=(ticker,))
+        df = db_manager.client.query_df(
+            "SELECT timestamp, price, volume FROM prices WHERE symbol = %(symbol)s ORDER BY timestamp ASC",
+            parameters={"symbol": ticker}
+        )
         
         if df.empty:
             return f"Không có dữ liệu trong Database để vẽ biểu đồ cho mã {ticker}."
@@ -122,7 +143,7 @@ def tool_generate_market_chart(ticker: str) -> str:
         plt.close('all')
 
 def tool_calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Mô-đun Data Engineering: Tính toán chuỗi chỉ số kỹ thuật sliding window"""
+    """Data Engineering Module: Computes technical indicators over a sliding window"""
     if df.empty: 
         return df
         
