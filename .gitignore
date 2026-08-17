@@ -4,3 +4,5 @@ __pycache__
 *.csv
 .env
 qdrant_storage
+venv/
+*.log
