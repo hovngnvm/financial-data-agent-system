@@ -3,7 +3,6 @@ import matplotlib
 matplotlib.use('Agg')  # Headless backend for server environments
 import matplotlib.pyplot as plt
 import pandas as pd
-from langchain_ollama import OllamaLLM
 from qdrant_client.models import Prefetch, FusionQuery, Fusion
 
 from src.database import db_manager
@@ -13,14 +12,6 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Lazy loading LLM instance specifically for Context Engineering tasks
-_rag_llm = None
-
-def get_rag_llm():
-    global _rag_llm
-    if _rag_llm is None:
-        _rag_llm = OllamaLLM(model=settings.llm_coder_model, temperature=0.1)
-    return _rag_llm
 
 def tool_get_ticker_prices(ticker: str, limit: int = 30) -> tuple[list[dict], str | None]:
     """Semantic Layer Tool: Safely retrieves price history (timestamp, price, volume) for a specific symbol from ClickHouse."""
