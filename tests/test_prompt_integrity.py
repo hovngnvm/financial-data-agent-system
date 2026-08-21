@@ -23,7 +23,3 @@ def test_prompts_and_nodes_integrity():
     assert "TIẾNG VIỆT" in ANALYST_INVESTMENT_PROMPT.upper()
     assert "TIẾNG VIỆT" in ANALYST_MACRO_NEWS_PROMPT.upper()
     assert workflow is not None
-    print("ALL PROMPTS, NODES, AND GRAPH COMPILED AND VERIFIED SUCCESSFULLY!")
-
-if __name__ == "__main__":
-    test_prompts_and_nodes_integrity()
